@@ -808,7 +808,10 @@ struct JZOfficeTests {
         #expect(timesFont.familyName == "Times New Roman")
 
         let simsunFont = CGElementDrawer.resolveNSFont(face: "SimSun", size: 14, bold: false, italic: false)
-        #expect(simsunFont.familyName == "Times New Roman" || simsunFont.familyName == "Songti SC" || simsunFont.familyName == "Georgia")
+        #expect(simsunFont.familyName == "Songti SC" || simsunFont.familyName == "STSong" || simsunFont.familyName == "Times New Roman" || simsunFont.familyName == "Georgia")
+
+        let dengxianFont = CGElementDrawer.resolveNSFont(face: "DengXian", size: 14, bold: false, italic: false)
+        #expect(dengxianFont.familyName == "PingFang SC" || dengxianFont.familyName == "DengXian")
 
         let consolasFont = CGElementDrawer.resolveNSFont(face: "Consolas", size: 14, bold: false, italic: false)
         #expect(consolasFont.isFixedPitch || consolasFont.fontDescriptor.symbolicTraits.contains(.monoSpace))

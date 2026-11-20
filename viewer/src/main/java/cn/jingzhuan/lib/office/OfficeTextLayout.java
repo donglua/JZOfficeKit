@@ -260,11 +260,11 @@ final class OfficeTextLayout {
         } else if ("impact".equals(lower)) {
             target = "sans-serif-condensed";
             style |= Typeface.BOLD;
-        } else if (containsAny(lower, "song", "宋体", "times new roman", "times", "georgia", "cambria", "fangsong", "仿宋", "mincho", "细明体", "pmingliu")) {
+        } else if (containsAny(lower, "song", "宋体", "times new roman", "times", "georgia", "cambria", "fangsong", "仿宋", "mincho", "细明体", "pmingliu", "simsun", "source han serif", "noto serif", "palatino", "garamond")) {
             target = "serif";
-        } else if (containsAny(lower, "mono", "courier", "consolas", "menlo", "monaco", "lucida console")) {
+        } else if (containsAny(lower, "mono", "courier", "consolas", "menlo", "monaco", "lucida console", "fira code", "jetbrains")) {
             target = "monospace";
-        } else if (containsAny(lower, "kai", "楷体", "comic sans", "casual", "cursive")) {
+        } else if (containsAny(lower, "kai", "楷体", "楷", "lisu", "隶书", "comic sans", "casual", "cursive")) {
             target = "cursive";
         } else if (weight == 300 || lower.contains("light")) {
             target = "sans-serif-light";
@@ -272,6 +272,8 @@ final class OfficeTextLayout {
             target = "sans-serif-medium";
         } else if (weight >= 800 || lower.contains("black") || lower.contains("heavy")) {
             target = "sans-serif-black";
+        } else if (containsAny(lower, "dengxian", "等线", "yahei", "雅黑", "simhei", "黑体", "youyuan", "幼圆", "calibri", "segoe ui", "aptos", "source han sans", "noto sans")) {
+            target = "sans-serif";
         } else {
             target = face;
         }
