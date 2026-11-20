@@ -126,6 +126,15 @@ impl Parser<'_> {
                     .document
                     .warn("Symbol fonts are unsupported; symbols are omitted."),
                 "pict" | "object" | "txbxContent" => {
+                    if matches!(node.name.as_str(), "pict" | "object") {
+                        for image in self.legacy_images(node) {
+                            if flow.in_cell {
+                                flow.cell_image(image)?;
+                            } else {
+                                flow.image(image)?;
+                            }
+                        }
+                    }
                     if let Some(content) = node.descendant("txbxContent") {
                         if !flow.current.runs.is_empty() {
                             flow.current.after = 0.0;

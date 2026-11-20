@@ -221,25 +221,7 @@ impl Parser<'_> {
         }
         let width = extent.map_or(0.0, |n| xml::number(n.attr("cx"), 0.0) / EMU_PER_POINT);
         let height = extent.map_or(0.0, |n| xml::number(n.attr("cy"), 0.0) / EMU_PER_POINT);
-        if width <= 0.0 || height <= 0.0 {
-            self.document
-                .warn("Images with missing or invalid extents use a fallback size.");
-        }
-        if width > MAX_COORDINATE || height > MAX_COORDINATE {
-            self.document
-                .warn("Oversized image extents are limited to 1200 points.");
-        }
-        let width = if width > 0.0 {
-            width.clamp(1.0, MAX_COORDINATE)
-        } else {
-            144.0
-        };
-        let height = if height > 0.0 {
-            height.clamp(1.0, MAX_COORDINATE)
-        } else {
-            144.0
-        };
-        (width, height)
+        self.normalize_image_extent(width, height)
     }
 
     fn resolve_image_element(
@@ -254,6 +236,16 @@ impl Parser<'_> {
         } else {
             blip.attr("r:embed")
         };
+        self.resolve_image_by_id(id, src_rect, width, height)
+    }
+
+    fn resolve_image_by_id(
+        &mut self,
+        id: &str,
+        src_rect: Option<&Node>,
+        width: f32,
+        height: f32,
+    ) -> Option<Element> {
         let Some(target) = self.relationships.get(id).filter(|_| !id.is_empty()) else {
             self.document.warn(
                 "External, linked or unresolved images are omitted; no network requests are made.",
@@ -290,6 +282,66 @@ impl Parser<'_> {
             image_bounds,
             ..Element::default()
         })
+    }
+
+    /// 提取旧版 VML 容器（`w:pict` / `w:object`）中的 `v:imagedata` 位图，
+    /// 解析外层 VML 形状 CSS `style` 的宽高，并跳过 `txbxContent` 避免与正文流重复提取。
+    pub(super) fn legacy_images(&mut self, node: &Node) -> Vec<Element> {
+        let mut out = Vec::new();
+        self.collect_legacy_images(node, "", &mut out);
+        out
+    }
+
+    fn collect_legacy_images(&mut self, node: &Node, shape_style: &str, out: &mut Vec<Element>) {
+        if node.name == "txbxContent" {
+            return;
+        }
+        let style = if matches!(
+            node.name.as_str(),
+            "shape" | "rect" | "roundrect" | "oval" | "image"
+        ) && !node.attr("style").trim().is_empty()
+        {
+            node.attr("style")
+        } else {
+            shape_style
+        };
+        if node.name == "imagedata" {
+            let id = ["r:id", "id", "r:pict", "relid"]
+                .into_iter()
+                .find_map(|key| node.get_attr(key).filter(|v| !v.trim().is_empty()))
+                .unwrap_or("");
+            let (raw_w, raw_h) = parse_vml_dimensions(style);
+            let (width, height) = self.normalize_image_extent(raw_w, raw_h);
+            if let Some(element) = self.resolve_image_by_id(id, None, width, height) {
+                out.push(element);
+            }
+            return;
+        }
+        for child in &node.children {
+            self.collect_legacy_images(child, style, out);
+        }
+    }
+
+    fn normalize_image_extent(&mut self, width: f32, height: f32) -> (f32, f32) {
+        if width <= 0.0 || height <= 0.0 {
+            self.document
+                .warn("Images with missing or invalid extents use a fallback size.");
+        }
+        if width > MAX_COORDINATE || height > MAX_COORDINATE {
+            self.document
+                .warn("Oversized image extents are limited to 1200 points.");
+        }
+        let width = if width > 0.0 {
+            width.clamp(1.0, MAX_COORDINATE)
+        } else {
+            144.0
+        };
+        let height = if height > 0.0 {
+            height.clamp(1.0, MAX_COORDINATE)
+        } else {
+            144.0
+        };
+        (width, height)
     }
 
     fn parse_wsp(&mut self, wsp: &Node, width: f32, height: f32) -> Result<Option<Element>> {
@@ -730,6 +782,48 @@ fn parse_position_v(
 }
 
 const MIN_SOURCE_FRACTION: f32 = 0.001;
+
+fn parse_vml_dimensions(style: &str) -> (f32, f32) {
+    let mut width = 0.0;
+    let mut height = 0.0;
+    for decl in style.split(';') {
+        let Some((key, raw_value)) = decl.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.eq_ignore_ascii_case("width") {
+            width = parse_css_length_pt(raw_value);
+        } else if key.eq_ignore_ascii_case("height") {
+            height = parse_css_length_pt(raw_value);
+        }
+    }
+    (width, height)
+}
+
+fn parse_css_length_pt(raw: &str) -> f32 {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    let (num_str, factor) = if let Some(v) = trimmed.strip_suffix("pt") {
+        (v, 1.0_f32)
+    } else if let Some(v) = trimmed.strip_suffix("in") {
+        (v, 72.0_f32)
+    } else if let Some(v) = trimmed.strip_suffix("cm") {
+        (v, 72.0_f32 / 2.54)
+    } else if let Some(v) = trimmed.strip_suffix("mm") {
+        (v, 72.0_f32 / 25.4)
+    } else if let Some(v) = trimmed.strip_suffix("px") {
+        (v, 0.75_f32)
+    } else if let Some(v) = trimmed.strip_suffix("pc") {
+        (v, 12.0_f32)
+    } else {
+        (trimmed.as_str(), 1.0_f32)
+    };
+    num_str
+        .trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|n| n.is_finite() && *n > 0.0)
+        .map_or(0.0, |n| n * factor)
+}
 
 fn crop_values(node: &Node) -> Option<ImageCrop> {
     let crop = ImageCrop {

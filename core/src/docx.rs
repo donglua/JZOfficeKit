@@ -167,6 +167,11 @@ impl Parser<'_> {
                     }
                 }
                 "pict" | "object" | "txbxContent" => {
+                    if matches!(node.name.as_str(), "pict" | "object") {
+                        for image in self.legacy_images(node) {
+                            self.push(image)?;
+                        }
+                    }
                     if let Some(content) = node.descendant("txbxContent") {
                         self.body(content)?;
                     }
@@ -332,6 +337,10 @@ fn skipped(name: &str) -> bool {
 }
 
 fn inspect(node: &Node, document: &mut Document) {
+    inspect_node(node, document, false);
+}
+
+fn inspect_node(node: &Node, document: &mut Document, in_drawing: bool) {
     if node.name == "AlternateContent" {
         match select_alternate(node) {
             Some(branch) => {
@@ -340,7 +349,7 @@ fn inspect(node: &Node, document: &mut Document) {
                         "Alternate content uses one saved representation; unsupported features may be lost.",
                     );
                 }
-                inspect(branch.node, document);
+                inspect_node(branch.node, document, in_drawing);
             }
             None => {
                 document.warn(
@@ -350,11 +359,16 @@ fn inspect(node: &Node, document: &mut Document) {
         }
         return;
     }
+    let child_in_drawing = in_drawing || node.name == "drawing";
     let warning = match node.name.as_str() {
         "headerReference" | "footerReference" => None, // 已支持页眉页脚
         "footnoteReference" | "endnoteReference" => Some("Footnotes and endnotes are omitted."),
         "oMath" | "oMathPara" => Some("Mathematical equations are omitted."),
-        "pict" | "object" | "txbxContent" => Some(
+        "pict" if is_simple_vml_image(node) => None,
+        "pict" | "object" => Some(
+            "Text box content is preserved in document flow; legacy drawings and box layout are omitted.",
+        ),
+        "txbxContent" if !in_drawing => Some(
             "Text box content is preserved in document flow; legacy drawings and box layout are omitted.",
         ),
         "altChunk" => Some("Embedded document content is omitted."),
@@ -381,6 +395,35 @@ fn inspect(node: &Node, document: &mut Document) {
         document.warn(message);
     }
     for child in &node.children {
-        inspect(child, document);
+        inspect_node(child, document, child_in_drawing);
     }
+}
+
+fn is_simple_vml_image(pict: &Node) -> bool {
+    pict.descendant("imagedata").is_some()
+        && pict.descendant("txbxContent").is_none()
+        && pict.descendant("textbox").is_none()
+        && !has_unhandled_vml(pict)
+}
+
+fn has_unhandled_vml(node: &Node) -> bool {
+    if node.name == "shapetype" {
+        return false;
+    }
+    if node
+        .attr("style")
+        .to_ascii_lowercase()
+        .replace(' ', "")
+        .contains("position:absolute")
+    {
+        return true;
+    }
+    if matches!(
+        node.name.as_str(),
+        "line" | "polyline" | "arc" | "curve" | "oval" | "roundrect" | "rect"
+    ) && node.descendant("imagedata").is_none()
+    {
+        return true;
+    }
+    node.children.iter().any(has_unhandled_vml)
 }

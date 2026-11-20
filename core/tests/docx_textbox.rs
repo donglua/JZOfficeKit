@@ -28,6 +28,7 @@ fn document_xml(body: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+ xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
  xmlns:v="urn:schemas-microsoft-com:vml"
  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
  xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
@@ -160,6 +161,73 @@ fn parses_wps_shape_textbox_deduplicating_fallback_and_indexes_search() -> TestR
         .warnings
         .iter()
         .any(|w| w.contains("Alternate content")));
+    assert!(!document
+        .warnings
+        .iter()
+        .any(|w| w.contains("legacy drawings and box layout")));
+    Ok(())
+}
+
+#[test]
+fn extracts_legacy_vml_imagedata_from_pict_and_object() -> TestResult {
+    let mut parts = parts(
+        r#"<w:p><w:r><w:pict>
+  <v:shapetype id="_x0000_t75"/>
+  <v:shape style="width:120pt;height:60pt"><v:imagedata r:id="rLegacy"/></v:shape>
+</w:pict></w:r></w:p>
+<w:p><w:r><w:object>
+  <v:shape style="width:1in;height:0.5in"><v:imagedata r:id="rOlePreview"/></v:shape>
+</w:object></w:r></w:p>"#,
+    );
+    parts.push(("word/media/legacy.png", vec![1, 2, 3, 4]));
+    parts.push(("word/media/ole.png", vec![5, 6, 7, 8]));
+    let rels = relationships(&[
+        ("rLegacy", "image", "media/legacy.png"),
+        ("rOlePreview", "image", "media/ole.png"),
+    ]);
+    parts.retain(|(path, _)| *path != "word/_rels/document.xml.rels");
+    parts.push(xml("word/_rels/document.xml.rels", &rels));
+
+    let document = parse_reader(Cursor::new(archive(&parts)?))?;
+    let images: Vec<_> = document
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.kind, ElementType::IMAGE))
+        .collect();
+    assert_eq!(images.len(), 2);
+    assert_eq!(images[0].image.as_deref(), Some("word/media/legacy.png"));
+    checks::near(images[0].width, 120.0);
+    checks::near(images[0].height, 60.0);
+    assert_eq!(images[1].image.as_deref(), Some("word/media/ole.png"));
+    checks::near(images[1].width, 72.0);
+    checks::near(images[1].height, 36.0);
+    // w:object 仍触发旧版对象提示，但简单内联 w:pict 图片不会单独误报
+    assert!(document
+        .warnings
+        .iter()
+        .any(|w| w.contains("legacy drawings and box layout")));
+    Ok(())
+}
+
+#[test]
+fn inline_vml_pict_image_without_object_or_textbox_omits_legacy_warning() -> TestResult {
+    let mut parts = parts(
+        r#"<w:p><w:r><w:pict>
+  <v:shape style="width:96pt;height:48pt"><v:imagedata r:id="rLegacy"/></v:shape>
+</w:pict></w:r></w:p>"#,
+    );
+    parts.push(("word/media/legacy.png", vec![1, 2, 3, 4]));
+    let rels = relationships(&[("rLegacy", "image", "media/legacy.png")]);
+    parts.retain(|(path, _)| *path != "word/_rels/document.xml.rels");
+    parts.push(xml("word/_rels/document.xml.rels", &rels));
+
+    let document = parse_reader(Cursor::new(archive(&parts)?))?;
+    assert_eq!(document.blocks.len(), 1);
+    assert_eq!(
+        document.blocks[0].image.as_deref(),
+        Some("word/media/legacy.png")
+    );
+    assert!(document.warnings.is_empty(), "{:?}", document.warnings);
     Ok(())
 }
 
