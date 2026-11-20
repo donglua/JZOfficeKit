@@ -54,7 +54,7 @@ impl Parser<'_> {
         let mut elements = Vec::new();
         let mut found = false;
         for child in &node.children {
-            let container = if child.name == "AlternateContent" {
+            if child.name == "AlternateContent" {
                 let Some(chosen) = alternate(child) else {
                     continue;
                 };
@@ -67,15 +67,19 @@ impl Parser<'_> {
                     }
                     continue;
                 }
-                chosen
-            } else {
-                child
-            };
-            if !matches!(container.name.as_str(), "inline" | "anchor") {
+                for nested in &chosen.children {
+                    if matches!(nested.name.as_str(), "inline" | "anchor") {
+                        found = true;
+                        self.parse_container(nested, &mut elements)?;
+                    }
+                }
+                continue;
+            }
+            if !matches!(child.name.as_str(), "inline" | "anchor") {
                 continue;
             }
             found = true;
-            self.parse_container(container, &mut elements)?;
+            self.parse_container(child, &mut elements)?;
         }
         if !found {
             self.document.warn("Unsupported drawings are omitted.");

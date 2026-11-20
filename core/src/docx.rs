@@ -263,8 +263,45 @@ pub(crate) fn sections(body: &Node) -> Vec<&Node> {
     section::properties(body)
 }
 
-fn alternate(node: &Node) -> Option<&Node> {
-    node.child("Choice").or_else(|| node.child("Fallback"))
+struct AlternateBranch<'a> {
+    node: &'a Node,
+    lossless: bool,
+}
+
+fn is_lossless_choice_prefix(prefix: &str) -> bool {
+    matches!(prefix, "w" | "wp" | "a" | "pic" | "r" | "wps" | "wpg")
+}
+
+fn is_supported_choice_prefix(prefix: &str) -> bool {
+    is_lossless_choice_prefix(prefix) || matches!(prefix, "wp14" | "a14" | "w14" | "w15")
+}
+
+/// 按 OOXML Markup Compatibility 规则从 mc:AlternateContent 中择优选择已支持分支：
+/// 优先选用 Requires 全部受支持的第一个 mc:Choice，否则回退到 mc:Fallback。
+fn select_alternate(node: &Node) -> Option<AlternateBranch<'_>> {
+    for choice in node.named("Choice") {
+        let requires: Vec<&str> = choice.attr("Requires").split_ascii_whitespace().collect();
+        if requires
+            .iter()
+            .all(|prefix| is_supported_choice_prefix(prefix))
+        {
+            let lossless = requires
+                .iter()
+                .all(|prefix| is_lossless_choice_prefix(prefix));
+            return Some(AlternateBranch {
+                node: choice,
+                lossless,
+            });
+        }
+    }
+    node.child("Fallback").map(|fallback| AlternateBranch {
+        node: fallback,
+        lossless: false,
+    })
+}
+
+pub(super) fn alternate(node: &Node) -> Option<&Node> {
+    select_alternate(node).map(|branch| branch.node)
 }
 
 fn skipped(name: &str) -> bool {
@@ -295,6 +332,24 @@ fn skipped(name: &str) -> bool {
 }
 
 fn inspect(node: &Node, document: &mut Document) {
+    if node.name == "AlternateContent" {
+        match select_alternate(node) {
+            Some(branch) => {
+                if !branch.lossless {
+                    document.warn(
+                        "Alternate content uses one saved representation; unsupported features may be lost.",
+                    );
+                }
+                inspect(branch.node, document);
+            }
+            None => {
+                document.warn(
+                    "Alternate content uses one saved representation; unsupported features may be lost.",
+                );
+            }
+        }
+        return;
+    }
     let warning = match node.name.as_str() {
         "headerReference" | "footerReference" => None, // 已支持页眉页脚
         "footnoteReference" | "endnoteReference" => Some("Footnotes and endnotes are omitted."),
@@ -307,9 +362,6 @@ fn inspect(node: &Node, document: &mut Document) {
             Some("Tracked changes show inserted content and omit deleted content.")
         }
         "fldSimple" | "fldChar" => Some("Fields display saved results and are not recalculated."),
-        "AlternateContent" => Some(
-            "Alternate content uses one saved representation; unsupported features may be lost.",
-        ),
         "cols" if xml::number(node.attr("num"), 1.0) > 1.0 => {
             Some("Multiple columns are rendered in a single continuous flow.")
         }

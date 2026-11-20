@@ -156,5 +156,30 @@ fn parses_wps_shape_textbox_deduplicating_fallback_and_indexes_search() -> TestR
     assert_eq!(hits[0].paragraph_index, 1);
     assert_eq!(hits[0].start_char, 0);
     assert_eq!(hits[0].end_char, 10);
+    assert!(!document
+        .warnings
+        .iter()
+        .any(|w| w.contains("Alternate content")));
+    Ok(())
+}
+
+#[test]
+fn unsupported_alternate_choice_falls_back_and_warns() -> TestResult {
+    let document = parse(
+        r#"<w:p><w:r><mc:AlternateContent>
+  <mc:Choice Requires="cx">
+    <w:p><w:r><w:t>Unsupported ChartEx Choice</w:t></w:r></w:p>
+  </mc:Choice>
+  <mc:Fallback>
+    <w:r><w:t>Fallback text representation</w:t></w:r>
+  </mc:Fallback>
+</mc:AlternateContent></w:r></w:p>"#,
+    )?;
+
+    assert_eq!(texts(&document), vec!["Fallback text representation"]);
+    assert!(document
+        .warnings
+        .iter()
+        .any(|w| w.contains("Alternate content uses one saved representation")));
     Ok(())
 }
