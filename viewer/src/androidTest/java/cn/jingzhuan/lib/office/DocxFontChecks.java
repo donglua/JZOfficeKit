@@ -21,7 +21,7 @@ final class DocxFontChecks {
             + "<w:p><w:r><w:rPr>" + family("serif") + "<w:b/><w:i/></w:rPr><w:t>Serif: iiii WWWW 0123456789 中文</w:t></w:r></w:p>"
             + "<w:p><w:r><w:rPr>" + family("Unavailable Office Font") + "</w:rPr><w:t>Missing font: fallback 中文</w:t></w:r></w:p>"
             + "<w:p><w:r><w:rPr><w:rFonts w:ascii=\"monospace\" w:eastAsia=\"serif\"/></w:rPr>"
-            + "<w:t>Mixed fonts: fallback 中文</w:t></w:r></w:p>"
+            + "<w:t>Mixed fonts: split 中文</w:t></w:r></w:p>"
             + "<w:p><w:r><w:rPr>" + family("Source Han Sans SC Light") + "<w:b/></w:rPr><w:t>Light bold 中文</w:t></w:r></w:p>";
         File source = CompatibilityChecks.document(context, "fonts", "word/document.xml", new String[][] {
             {"word/document.xml", "<w:document" + namespace + "><w:body>" + body + "</w:body></w:document>"},
@@ -33,9 +33,10 @@ final class DocxFontChecks {
             OfficeDocument document = pkg.document;
             check(document.blocks.size() == 5, "Font fixture has five paragraphs");
             check("Unavailable Office Font".equals(document.blocks.get(2).paragraphs.get(0).runs.get(0).fontFace), "Missing family is passed to device fallback");
-            check(document.blocks.get(3).paragraphs.get(0).runs.get(0).fontFace.isEmpty(), "Mixed-script families retain default fallback");
-            check(document.warnings.stream().anyMatch(w -> w.contains("device fonts"))
-                && document.warnings.stream().anyMatch(w -> w.contains("Mixed-script")), "Font limitations remain visible");
+            check(document.blocks.get(3).paragraphs.get(0).runs.size() == 2, "Mixed-script run splits into per-script runs");
+            check("monospace".equals(document.blocks.get(3).paragraphs.get(0).runs.get(0).fontFace), "Mixed-script Latin keeps ascii font");
+            check("serif".equals(document.blocks.get(3).paragraphs.get(0).runs.get(1).fontFace), "Mixed-script CJK keeps eastAsia font");
+            check(document.warnings.stream().anyMatch(w -> w.contains("device fonts")), "Device font notice remains visible");
             instrumentation.runOnMainChecked(() -> {
                 TextPaint mono = paint(document.blocks.get(0).paragraphs.get(0));
                 check(Math.abs(mono.measureText("iiii") - mono.measureText("WWWW")) < .01f, "Inherited monospace reaches measured text");

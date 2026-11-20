@@ -92,7 +92,7 @@ impl Parser<'_> {
                     }
                     self.inline(node, &font, flow)?;
                 }
-                "t" => flow.text(font.run(&node.text, &mut self.document))?,
+                "t" => flow.texts(font.runs(&node.text, &mut self.document))?,
                 "tab" | "ptab" => flow.text(font.run("\t", &mut self.document))?,
                 "br" | "cr" => {
                     if matches!(node.attr("type"), "page" | "column") {
@@ -180,6 +180,13 @@ impl Flow {
             self.split_inline_drawing = true;
         }
         self.saw_inline_drawing = true;
+    }
+
+    fn texts(&mut self, runs: Vec<Run>) -> Result<()> {
+        for run in runs {
+            self.text(run)?;
+        }
+        Ok(())
     }
 
     fn text(&mut self, run: Run) -> Result<()> {

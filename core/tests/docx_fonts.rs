@@ -146,10 +146,38 @@ fn preserves_per_script_inheritance_when_only_some_families_are_overridden() -> 
     // When missing slots inherit instead of being discarded.
     let document = parse(body, &styles)?;
 
-    // Then mixed families keep the documented fallback and unchanged slots remain usable.
+    // Then mixed runs split by script so Latin and CJK each keep their resolved font without fallback warning.
     let runs = &document.blocks[0].paragraphs[0].runs;
-    assert!(runs[0].font_face.is_empty());
+    assert_eq!(runs.len(), 3);
+    assert_eq!(runs[0].text, "Mixed ");
+    assert_eq!(runs[0].font_face, "monospace");
+    assert_eq!(runs[1].text, "中文");
     assert_eq!(runs[1].font_face, "serif");
+    assert_eq!(runs[2].text, "Consistent 中文");
+    assert_eq!(runs[2].font_face, "serif");
+    assert!(!document
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("Mixed-script")));
+    Ok(())
+}
+
+#[test]
+fn splits_mixed_script_run_and_falls_back_when_script_slot_is_missing() -> TestResult {
+    // Given a run defining ASCII and CS fonts but omitting eastAsia for CJK characters.
+    let body = r#"<w:p>
+<w:r><w:rPr><w:rFonts w:ascii="monospace" w:cs="serif"/></w:rPr><w:t>Hello 中文 World</w:t></w:r>
+</w:p>"#;
+
+    let document = parse(body, "")?;
+    let runs = &document.blocks[0].paragraphs[0].runs;
+    assert_eq!(runs.len(), 3);
+    assert_eq!(runs[0].text, "Hello ");
+    assert_eq!(runs[0].font_face, "monospace");
+    assert_eq!(runs[1].text, "中文");
+    assert!(runs[1].font_face.is_empty());
+    assert_eq!(runs[2].text, " World");
+    assert_eq!(runs[2].font_face, "monospace");
     assert!(document
         .warnings
         .iter()

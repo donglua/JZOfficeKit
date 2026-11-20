@@ -115,17 +115,21 @@ impl WrapMode {
     }
 }
 
+/// 判断单个字符是否属于东亚文字范围（CJK 表意文字、假名、谚文及全角符号）
+#[must_use]
+pub const fn is_east_asian_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{2E80}'..='\u{9FFF}'
+            | '\u{AC00}'..='\u{D7AF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{FE30}'..='\u{FE4F}'
+            | '\u{FF00}'..='\u{FFEF}'
+    )
+}
+
 pub fn contains_east_asian(text: &str) -> bool {
-    text.chars().any(|c| {
-        matches!(
-            c,
-            '\u{2E80}'..='\u{9FFF}'
-                | '\u{AC00}'..='\u{D7AF}'
-                | '\u{F900}'..='\u{FAFF}'
-                | '\u{FE30}'..='\u{FE4F}'
-                | '\u{FF00}'..='\u{FFEF}'
-        )
-    })
+    text.chars().any(is_east_asian_char)
 }
 
 pub fn infer_font_weight(font_face: &str) -> u16 {

@@ -1,6 +1,6 @@
 use super::MAX_COORDINATE;
 use crate::model::{
-    contains_east_asian, infer_font_weight, Document, LineSpacingRule, Paragraph, Run, VertAlign,
+    infer_font_weight, is_east_asian_char, Document, LineSpacingRule, Paragraph, Run, VertAlign,
 };
 use crate::xml::{self, Node};
 use crate::{Error, Result};
@@ -22,14 +22,25 @@ enum FontFamily {
 
 impl Font {
     pub fn run(&self, text: &str, document: &mut Document) -> Run {
-        let mut run = Run {
-            text: text.to_owned(),
-            ..self.run.clone()
-        };
+        self.runs(text, document)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| Run {
+                text: text.to_owned(),
+                ..self.run.clone()
+            })
+    }
+
+    /// 按字符脚本归属（ASCII / hAnsi / 东亚 / 复杂脚本）将文本拆分为连续的 Run 列表，
+    /// 避免混排文本整段退回阅读器默认字体；仅当所需脚本槽位未定义时回退并给出提示。
+    pub fn runs(&self, text: &str, document: &mut Document) -> Vec<Run> {
         for family in &self.families {
             if matches!(family, FontFamily::Theme) {
                 document.warn("Theme fonts use the viewer's default font.");
-                return run;
+                return vec![Run {
+                    text: text.to_owned(),
+                    ..self.run.clone()
+                }];
             }
         }
         let mut explicit = Vec::new();
@@ -39,34 +50,52 @@ impl Font {
             }
         }
         if explicit.is_empty() {
-            return run;
+            return vec![Run {
+                text: text.to_owned(),
+                ..self.run.clone()
+            }];
         }
 
         let all_identical = explicit.iter().all(|f| *f == explicit[0]);
-        let face = if all_identical {
-            Some(explicit[0])
-        } else {
-            let has_cjk = contains_east_asian(text);
-            let has_latin = text.chars().any(|c| c.is_ascii_alphabetic());
-            if has_cjk && !has_latin {
-                if let FontFamily::Explicit(ref ea) = self.families[2] {
-                    Some(ea.as_str())
-                } else {
-                    None
-                }
-            } else if has_latin && !has_cjk {
-                if let FontFamily::Explicit(ref ascii) = self.families[0] {
-                    Some(ascii.as_str())
-                } else if let FontFamily::Explicit(ref h_ansi) = self.families[1] {
-                    Some(h_ansi.as_str())
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
+        if all_identical {
+            return vec![self.faced_run(text.to_owned(), Some(explicit[0]), document)];
+        }
+        if text.is_empty() {
+            return vec![self.faced_run(String::new(), self.first_explicit(), document)];
+        }
 
+        let mut runs = Vec::new();
+        let mut current_start = 0;
+        let mut current_face: Option<&str> = None;
+        let mut has_current = false;
+
+        for (idx, ch) in text.char_indices() {
+            let face = self.face_for_char(ch);
+            if !has_current {
+                current_start = idx;
+                current_face = face;
+                has_current = true;
+            } else if face != current_face {
+                runs.push(self.faced_run(
+                    text[current_start..idx].to_owned(),
+                    current_face,
+                    document,
+                ));
+                current_start = idx;
+                current_face = face;
+            }
+        }
+        if has_current {
+            runs.push(self.faced_run(text[current_start..].to_owned(), current_face, document));
+        }
+        runs
+    }
+
+    fn faced_run(&self, text: String, face: Option<&str>, document: &mut Document) -> Run {
+        let mut run = Run {
+            text,
+            ..self.run.clone()
+        };
         if let Some(face) = face {
             run.font_face = face.to_owned();
             run.weight = infer_font_weight(face);
@@ -75,10 +104,43 @@ impl Font {
             );
         } else {
             document.warn("Mixed-script font families use the viewer's default font.");
-            return run;
         }
         run
     }
+
+    fn first_explicit(&self) -> Option<&str> {
+        self.families.iter().find_map(explicit_slot)
+    }
+
+    fn face_for_char(&self, ch: char) -> Option<&str> {
+        if is_east_asian_char(ch) {
+            explicit_slot(&self.families[2])
+        } else if is_complex_script_char(ch) {
+            explicit_slot(&self.families[3])
+        } else if ch.is_ascii() {
+            explicit_slot(&self.families[0]).or_else(|| explicit_slot(&self.families[1]))
+        } else {
+            explicit_slot(&self.families[1]).or_else(|| explicit_slot(&self.families[0]))
+        }
+    }
+}
+
+fn explicit_slot(family: &FontFamily) -> Option<&str> {
+    match family {
+        FontFamily::Explicit(value) => Some(value.as_str()),
+        FontFamily::Default | FontFamily::Theme => None,
+    }
+}
+
+const fn is_complex_script_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{0590}'..='\u{08FF}'
+            | '\u{0900}'..='\u{109F}'
+            | '\u{1780}'..='\u{17FF}'
+            | '\u{FB1D}'..='\u{FDFF}'
+            | '\u{FE70}'..='\u{FEFF}'
+    )
 }
 
 pub(super) fn enabled(value: &str) -> bool {
