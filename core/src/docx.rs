@@ -1,6 +1,7 @@
 mod cell_style;
 mod drawings;
 mod format;
+mod notes;
 pub(super) mod numbering;
 mod paragraphs;
 mod section;
@@ -11,6 +12,7 @@ pub(super) mod theme;
 use crate::model::{Document, Element, Kind};
 use crate::xml::{self, Node};
 use crate::{Error, Package, Result};
+use notes::{NoteCollection, NoteKind};
 use numbering::Numbering;
 use std::collections::HashMap;
 use styles::Styles;
@@ -96,12 +98,17 @@ pub(crate) fn parse(
         None
     };
     let numbering = Numbering::parse(numbering_root.as_ref());
+    let footnotes = NoteCollection::load(package, main_part, NoteKind::Footnote, &mut document)?;
+    let endnotes = NoteCollection::load(package, main_part, NoteKind::Endnote, &mut document)?;
     let mut parser = Parser {
         package,
         document,
         relationships,
         styles,
         numbering,
+        footnotes,
+        endnotes,
+        active_note: None,
         cells: 0,
         text_bytes: 0,
         block_limit: FLOW_LIMIT,
@@ -111,6 +118,7 @@ pub(crate) fn parse(
         budget: scope.block_budget(),
     };
     parser.body(body)?;
+    parser.parse_notes()?;
     // 解析页眉页脚（在正文之后，避免影响正文的 blocks 计数）。
     // 多节文档中页眉页脚引用按节继承，使用按文档顺序收集的全部 sectPr。
     if !sections.is_empty() {
@@ -125,6 +133,9 @@ struct Parser<'a> {
     relationships: HashMap<String, String>,
     styles: Styles,
     pub(super) numbering: Numbering,
+    footnotes: NoteCollection,
+    endnotes: NoteCollection,
+    pub(super) active_note: Option<u32>,
     cells: usize,
     text_bytes: usize,
     block_limit: BlockLimit,
@@ -362,7 +373,7 @@ fn inspect_node(node: &Node, document: &mut Document, in_drawing: bool) {
     let child_in_drawing = in_drawing || node.name == "drawing";
     let warning = match node.name.as_str() {
         "headerReference" | "footerReference" => None, // 已支持页眉页脚
-        "footnoteReference" | "endnoteReference" => Some("Footnotes and endnotes are omitted."),
+        "footnoteReference" | "endnoteReference" => None, // 已支持脚注与尾注静态预览
         "oMath" | "oMathPara" => Some("Mathematical equations are omitted."),
         "pict" if is_simple_vml_image(node) => None,
         "pict" | "object" => Some(

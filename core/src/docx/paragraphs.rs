@@ -1,5 +1,5 @@
-use super::{alternate, format, skipped, Parser, MAX_TEXT};
-use crate::model::{Element, ElementType, Paragraph, Run, WrapMode};
+use super::{alternate, format, notes::NoteKind, skipped, Parser, MAX_TEXT};
+use crate::model::{Element, ElementType, Paragraph, Run, VertAlign, WrapMode};
 use crate::xml::Node;
 use crate::{Error, Result};
 
@@ -70,6 +70,44 @@ impl Parser<'_> {
         Ok(flow.elements)
     }
 
+    fn note_reference(
+        &mut self,
+        kind: NoteKind,
+        id: &str,
+        font: &format::Font,
+        flow: &mut Flow,
+    ) -> Result<()> {
+        let number = self.note_collection_mut(kind).reference(id);
+        if let Some(number) = number {
+            self.write_note_number(number, font, flow)
+        } else {
+            self.document
+                .warn("DOCX references with missing note targets are omitted.");
+            Ok(())
+        }
+    }
+
+    fn note_mark(&mut self, font: &format::Font, flow: &mut Flow) -> Result<()> {
+        if let Some(number) = self.active_note {
+            self.write_note_number(number, font, flow)
+        } else {
+            self.document
+                .warn("DOCX note marks outside note bodies are omitted.");
+            Ok(())
+        }
+    }
+
+    fn write_note_number(
+        &mut self,
+        number: u32,
+        font: &format::Font,
+        flow: &mut Flow,
+    ) -> Result<()> {
+        let mut run = font.run(&number.to_string(), &mut self.document);
+        run.vert_align = VertAlign::Superscript;
+        flow.text(run)
+    }
+
     fn inline(&mut self, parent: &Node, font: &format::Font, flow: &mut Flow) -> Result<()> {
         for node in &parent.children {
             match node.name.as_str() {
@@ -103,6 +141,13 @@ impl Parser<'_> {
                 }
                 "noBreakHyphen" => flow.text(font.run("\u{2011}", &mut self.document))?,
                 "softHyphen" => flow.text(font.run("\u{ad}", &mut self.document))?,
+                "footnoteReference" => {
+                    self.note_reference(NoteKind::Footnote, node.attr("id"), font, flow)?
+                }
+                "endnoteReference" => {
+                    self.note_reference(NoteKind::Endnote, node.attr("id"), font, flow)?
+                }
+                "footnoteRef" | "endnoteRef" => self.note_mark(font, flow)?,
                 "drawing" => {
                     for image in self.drawings(node)? {
                         if flow.in_cell {
