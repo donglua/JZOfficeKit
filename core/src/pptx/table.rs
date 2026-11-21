@@ -1,7 +1,7 @@
 use super::flag;
 use super::geometry::{points, Bounds};
 use super::render::Render;
-use crate::model::{Element, ElementType};
+use crate::model::{CellRange, Document, Element, ElementType};
 use crate::xml::Node;
 use crate::{Error, Result};
 
@@ -51,6 +51,7 @@ impl Render<'_> {
             }
         }
         let mut any_valign = false;
+        let mut merge_flags = Vec::new();
         for row in table.named("tr") {
             if element.rows.len() >= 500 {
                 return Err(Error::Limit("PPTX table exceeds 500 rows"));
@@ -58,6 +59,7 @@ impl Render<'_> {
             let mut cells = Vec::new();
             let mut fills = Vec::new();
             let mut valigns = Vec::new();
+            let mut row_merge_flags = Vec::new();
             // 本行是否存在显式 anchor；仅当任一单元格声明了 anchor 才输出该行
             let mut has_valign = false;
             for cell in row.named("tc") {
@@ -65,13 +67,21 @@ impl Render<'_> {
                     return Err(Error::Invalid("PPTX table is not rectangular"));
                 }
                 self.budget.object()?;
-                if !matches!(cell.attr("gridSpan"), "" | "1")
-                    || !matches!(cell.attr("rowSpan"), "" | "1")
-                    || flag(cell.attr("hMerge"), false)
-                    || flag(cell.attr("vMerge"), false)
-                {
-                    self.doc
-                        .warn("PPTX merged table cells are displayed as separate cells.");
+                let grid_span = merge_span(cell.attr("gridSpan"))?;
+                let row_span = merge_span(cell.attr("rowSpan"))?;
+                let h_merge = flag(cell.attr("hMerge"), false);
+                let v_merge = flag(cell.attr("vMerge"), false);
+                row_merge_flags.push((h_merge, v_merge));
+                // 合并跨度只在锚点单元格声明；hMerge / vMerge 用于标记被覆盖的位置。
+                if !h_merge && !v_merge && (grid_span > 1 || row_span > 1) {
+                    let start_row = element.rows.len() as u32;
+                    let start_column = cells.len() as u32;
+                    element.merges.push(CellRange {
+                        start_row,
+                        start_column,
+                        end_row: start_row.saturating_add(row_span - 1),
+                        end_column: start_column.saturating_add(grid_span - 1),
+                    });
                 }
                 let paragraphs = match cell.child("txBody") {
                     Some(body) => self.paragraphs(body, &[])?,
@@ -116,6 +126,7 @@ impl Render<'_> {
             element.rows.push(cells);
             element.cell_fills.push(fills);
             element.cell_valigns.push(valigns);
+            merge_flags.push(row_merge_flags);
             if has_valign {
                 any_valign = true;
             }
@@ -127,10 +138,81 @@ impl Render<'_> {
         if element.rows.is_empty() {
             return Ok(Vec::new());
         }
+        resolve_merges(&mut element, &merge_flags, self.doc)?;
         self.doc.warn("PPTX table row heights are approximate.");
         if table.child("tblPr").is_some() {
             self.doc.warn("PPTX table styles are simplified.");
         }
         Ok(vec![element])
     }
+}
+
+fn merge_span(value: &str) -> Result<u32> {
+    if value.is_empty() {
+        return Ok(1);
+    }
+    value
+        .parse::<u32>()
+        .ok()
+        .filter(|span| *span > 0)
+        .ok_or(Error::Invalid("Invalid PPTX table merge span"))
+}
+
+fn resolve_merges(
+    element: &mut Element,
+    merge_flags: &[Vec<(bool, bool)>],
+    document: &mut Document,
+) -> Result<()> {
+    let row_count = element.rows.len();
+    let column_count = element.column_widths.len();
+    let mut covered = vec![false; row_count * column_count];
+    let mut missing_continuation_flags = false;
+
+    for merge_index in 0..element.merges.len() {
+        let merge = element.merges[merge_index];
+        if merge.end_row as usize >= row_count || merge.end_column as usize >= column_count {
+            return Err(Error::Invalid("PPTX table merge exceeds grid"));
+        }
+        for row in merge.start_row..=merge.end_row {
+            for column in merge.start_column..=merge.end_column {
+                let index = row as usize * column_count + column as usize;
+                if covered[index] {
+                    return Err(Error::Invalid("Overlapping PPTX table merged ranges"));
+                }
+                covered[index] = true;
+                if row == merge.start_row && column == merge.start_column {
+                    continue;
+                }
+                let (h_merge, v_merge) = merge_flags[row as usize][column as usize];
+                if !h_merge && !v_merge {
+                    missing_continuation_flags = true;
+                }
+            }
+        }
+    }
+
+    let orphan_continuation = merge_flags.iter().enumerate().any(|(row, flags)| {
+        flags
+            .iter()
+            .enumerate()
+            .any(|(column, (h_merge, v_merge))| {
+                (*h_merge || *v_merge) && !covered[row * column_count + column]
+            })
+    });
+    if missing_continuation_flags || orphan_continuation {
+        document.warn("PPTX table merge flags are inconsistent; declared spans are used.");
+    }
+
+    // 从属位置不再保留重复正文，绘制、检索和选区都只读取合并区域锚点。
+    for merge_index in 0..element.merges.len() {
+        let merge = element.merges[merge_index];
+        for row in merge.start_row..=merge.end_row {
+            for column in merge.start_column..=merge.end_column {
+                if row != merge.start_row || column != merge.start_column {
+                    element.rows[row as usize][column as usize].clear();
+                }
+            }
+        }
+    }
+    Ok(())
 }
