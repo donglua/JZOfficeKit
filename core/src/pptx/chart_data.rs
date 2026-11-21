@@ -11,6 +11,7 @@ pub(super) struct Series<'a> {
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum ChartType {
     Line,
+    Area,
     Column,
     /// 横向条形图（`barChart` 且 `barDir="bar"`）
     Bar,
@@ -111,6 +112,12 @@ impl<'a> Chart<'a> {
                     return None;
                 }
                 ChartType::Line
+            }
+            "areaChart" => {
+                if !matches!(value(chart_node, "grouping"), "" | "standard") {
+                    return None;
+                }
+                ChartType::Area
             }
             "barChart" => {
                 if !matches!(value(chart_node, "grouping"), "" | "clustered" | "standard") {
@@ -241,6 +248,10 @@ impl<'a> Chart<'a> {
             && !ys.is_empty()
             && ys.iter().all(|&y| y >= 0.0)
         {
+            ys.push(0.0);
+        }
+        // 面积区域始终相对零轴闭合；全负值系列也需要把零纳入自动数值范围。
+        if chart_type == ChartType::Area && !ys.is_empty() {
             ys.push(0.0);
         }
         // 饼图/环形图不使用坐标轴范围，按扇区求和绘制，这里给出占位范围。

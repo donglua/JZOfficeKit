@@ -43,6 +43,11 @@ impl Render<'_> {
                     "PPTX line charts use cached values; layout, markers and styling are simplified.",
                 );
             }
+            ChartType::Area => {
+                painter.render.doc.warn(
+                    "PPTX area charts use cached values; filled regions and styling are simplified.",
+                );
+            }
             ChartType::Column => {
                 painter.render.doc.warn(
                     "PPTX column charts use cached values; layout, bars and styling are simplified.",
@@ -129,7 +134,9 @@ impl ChartPaint<'_, '_> {
         let (left_margin, right_margin, bottom_margin) = match chart.chart_type {
             ChartType::Pie { .. } => (8.0, 8.0, 8.0),
             ChartType::Bar => ((xs.size * 6.0).max(32.0), 12.0, ys.size * 2.8),
-            ChartType::Line | ChartType::Column => ((ys.size * 4.8).max(26.0), 12.0, xs.size * 2.8),
+            ChartType::Line | ChartType::Area | ChartType::Column => {
+                ((ys.size * 4.8).max(26.0), 12.0, xs.size * 2.8)
+            }
         };
         let top_margin = if title_text.is_empty() {
             8.0
@@ -207,6 +214,11 @@ impl ChartPaint<'_, '_> {
                             previous = None;
                         }
                     }
+                }
+            }
+            ChartType::Area => {
+                for index in 0..chart.series.len() {
+                    self.area_series(chart, plot, index);
                 }
             }
             ChartType::Bar => {
@@ -352,7 +364,10 @@ impl ChartPaint<'_, '_> {
                         );
                     }
                     // 饼图/环形图已在上面的分类图例分支提前返回，此分支不会命中。
-                    ChartType::Column | ChartType::Bar | ChartType::Pie { .. } => {
+                    ChartType::Area
+                    | ChartType::Column
+                    | ChartType::Bar
+                    | ChartType::Pie { .. } => {
                         let fill = self.series_fill(series.node, index);
                         self.elements.push(Element {
                             kind: ElementType::RECT,
@@ -379,6 +394,60 @@ impl ChartPaint<'_, '_> {
             }
         }
         true
+    }
+
+    /// 标准面积图：各相邻有效点形成独立填充子路径，顶部轮廓沿用折线语义。
+    fn area_series(&mut self, chart: &Chart<'_>, plot: Plot, index: usize) {
+        let series = &chart.series[index];
+        let (color, width) = self.stroke(series.node, self.render.theme.accent(index), 1.5);
+        let fill = self.series_fill(series.node, index);
+        let baseline = fraction(0.0, chart.y_range, chart.y_axis).clamp(0.0, 1.0);
+        let mut previous = None;
+        let mut commands = Vec::new();
+        let mut lines = Vec::new();
+
+        for (i, value) in series.values.iter().enumerate() {
+            let point = series
+                .x(i)
+                .zip(value.or((chart.blanks == "zero").then_some(0.0)))
+                .map(|(x, y)| {
+                    (
+                        fraction(x, chart.x_range, chart.x_axis),
+                        fraction(y, chart.y_range, chart.y_axis),
+                    )
+                });
+            if let Some(point) = point {
+                if let Some(prior) = previous {
+                    if let Some((a, b)) = clip(prior, point) {
+                        append_area_regions(&mut commands, plot, a, b, baseline);
+                        lines.push((chart_point(plot, a), chart_point(plot, b)));
+                    }
+                }
+                previous = Some(point);
+            } else if chart.blanks != "span" {
+                previous = None;
+            }
+        }
+
+        if !commands.is_empty() {
+            self.elements.push(Element {
+                kind: ElementType::PATH,
+                x: 0.0,
+                y: 0.0,
+                width: plot.x * 2.0 + plot.width,
+                height: plot.y * 2.0 + plot.height,
+                fill,
+                paths: vec![Path {
+                    fill: true,
+                    stroke: false,
+                    commands,
+                }],
+                ..Element::default()
+            });
+        }
+        for (a, b) in lines {
+            self.line(a, b, color, width);
+        }
     }
 
     /// 提取首个系列各数据点的扇区颜色：优先 `<c:dPt>` 显式配色，其次主题强调色。
@@ -808,6 +877,58 @@ impl ChartPaint<'_, '_> {
             ..Element::default()
         });
     }
+}
+
+fn chart_point(plot: Plot, point: (f64, f64)) -> (f32, f32) {
+    (
+        plot.x + point.0 as f32 * plot.width,
+        plot.y + (1.0 - point.1) as f32 * plot.height,
+    )
+}
+
+/// 面积子路径相对零轴闭合；线段跨零时在交点拆开，避免生成自交四边形。
+fn append_area_regions(
+    commands: &mut Vec<PathCommand>,
+    plot: Plot,
+    a: (f64, f64),
+    b: (f64, f64),
+    baseline: f64,
+) {
+    if (a.1 - baseline) * (b.1 - baseline) < 0.0 {
+        let ratio = (baseline - a.1) / (b.1 - a.1);
+        let crossing = (a.0 + ratio * (b.0 - a.0), baseline);
+        append_area_region(commands, plot, a, crossing, baseline);
+        append_area_region(commands, plot, crossing, b, baseline);
+    } else {
+        append_area_region(commands, plot, a, b, baseline);
+    }
+}
+
+fn append_area_region(
+    commands: &mut Vec<PathCommand>,
+    plot: Plot,
+    a: (f64, f64),
+    b: (f64, f64),
+    baseline: f64,
+) {
+    if (b.0 - a.0).abs() <= f64::EPSILON
+        || ((a.1 - baseline).abs() <= f64::EPSILON && (b.1 - baseline).abs() <= f64::EPSILON)
+    {
+        return;
+    }
+    let a_base = chart_point(plot, (a.0, baseline));
+    let b_base = chart_point(plot, (b.0, baseline));
+    commands.push(PathCommand::Move([a_base.0, a_base.1]));
+    commands.push(PathCommand::Line([
+        chart_point(plot, a).0,
+        chart_point(plot, a).1,
+    ]));
+    commands.push(PathCommand::Line([
+        chart_point(plot, b).0,
+        chart_point(plot, b).1,
+    ]));
+    commands.push(PathCommand::Line([b_base.0, b_base.1]));
+    commands.push(PathCommand::Close);
 }
 
 /// 极坐标点：角度以弧度计，起点位于正上方（-90°）。

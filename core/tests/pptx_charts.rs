@@ -1,7 +1,7 @@
 pub mod support;
 
 use jz_office_core::{
-    model::{Document, ElementType, Page},
+    model::{Document, ElementType, Page, PathCommand},
     parse_reader,
 };
 use std::io::Cursor;
@@ -348,6 +348,118 @@ fn column_chart_renders_negative_values_from_zero_baseline() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn area_chart_renders_closed_fills_and_series_outlines() -> TestResult {
+    let document = document(&area_chart())?;
+    let page = &document.pages[0];
+
+    for color in [RED, BLUE] {
+        let areas = area_paths(page, color);
+        assert_eq!(areas.len(), 1, "Expected one filled path per series");
+        let path = areas[0].paths.first().ok_or("Missing area path")?;
+        assert!(path.fill);
+        assert!(!path.stroke);
+        assert_eq!(path_command_count(areas[0], PathCommandKind::Close), 3);
+        assert_eq!(path_command_count(areas[0], PathCommandKind::Move), 3);
+    }
+    assert_series(page, RED, [10.0, 25.0, 15.0, 30.0]);
+    assert_series(page, BLUE, [30.0, 20.0, 25.0, 10.0]);
+    assert!(document
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("area charts")));
+    Ok(())
+}
+
+#[test]
+fn area_chart_splits_positive_and_negative_regions_at_zero() -> TestResult {
+    let values = r#"<c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="2"/>
+<c:pt idx="0"><c:v>-15</c:v></c:pt><c:pt idx="1"><c:v>25</c:v></c:pt></c:numLit></c:val>"#;
+    let series = format!(
+        r#"<c:areaChart><c:grouping val="standard"/>{}<c:axId val="100"/><c:axId val="200"/></c:areaChart>"#,
+        fixture::series(
+            (0, "Delta", "C03050"),
+            r#"<c:cat><c:strLit><c:ptCount val="2"/><c:pt idx="0"><c:v>Down</c:v></c:pt><c:pt idx="1"><c:v>Up</c:v></c:pt></c:strLit></c:cat>"#,
+            values,
+        )
+    );
+    let chart = fixture::category_chart()
+        .replace("<c:lineChart><c:grouping val=\"standard\"/>", &series)
+        .replace("</c:lineChart>", "");
+
+    let document = document(&chart)?;
+    let areas = area_paths(&document.pages[0], RED);
+    assert_eq!(areas.len(), 1);
+    assert_eq!(path_command_count(areas[0], PathCommandKind::Close), 2);
+    assert_eq!(path_command_count(areas[0], PathCommandKind::Move), 2);
+    Ok(())
+}
+
+#[test]
+fn area_chart_honors_blank_value_policies() -> TestResult {
+    for (mode, expected_regions) in [("gap", 1), ("zero", 3), ("span", 2)] {
+        let chart = area_chart()
+            .replace(r#"<c:pt idx="1"><c:v>25</c:v></c:pt>"#, "")
+            .replace(
+                r#"dispBlanksAs val="gap""#,
+                &format!(r#"dispBlanksAs val="{mode}""#),
+            );
+        let document = document(&chart)?;
+        let areas = area_paths(&document.pages[0], RED);
+        assert_eq!(areas.len(), 1, "Missing area series for {mode}");
+        assert_eq!(
+            path_command_count(areas[0], PathCommandKind::Close),
+            expected_regions,
+            "Unexpected region count for {mode}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn stacked_area_charts_are_rejected_without_filled_regions() -> TestResult {
+    for grouping in ["stacked", "percentStacked"] {
+        let chart = area_chart().replace(
+            r#"grouping val="standard""#,
+            &format!(r#"grouping val="{grouping}""#),
+        );
+        assert_omitted(&chart)?;
+    }
+    Ok(())
+}
+
+fn area_chart() -> String {
+    fixture::category_chart().replace("lineChart", "areaChart")
+}
+
+fn area_paths(page: &Page, color: u32) -> Vec<&jz_office_core::model::Element> {
+    page.elements
+        .iter()
+        .filter(|element| matches!(element.kind, ElementType::PATH) && element.fill == color)
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+enum PathCommandKind {
+    Move,
+    Close,
+}
+
+fn path_command_count(element: &jz_office_core::model::Element, kind: PathCommandKind) -> usize {
+    element
+        .paths
+        .iter()
+        .flat_map(|path| &path.commands)
+        .filter(|command| {
+            matches!(
+                (kind, command),
+                (PathCommandKind::Move, PathCommand::Move(_))
+                    | (PathCommandKind::Close, PathCommand::Close)
+            )
+        })
+        .count()
+}
+
 fn document(chart: &str) -> TestResult<Document> {
     let mut parts = fixture::parts();
     replace(&mut parts, FIRST_CHART, chart);
@@ -367,6 +479,9 @@ fn assert_omitted(chart: &str) -> TestResult {
         }),
         "Rejected chart emitted series lines"
     );
+    assert!(document.pages[0].elements.iter().all(|element| {
+        !matches!(element.kind, ElementType::PATH) || ![RED, BLUE].contains(&element.fill)
+    }));
     assert!(
         document
             .warnings
