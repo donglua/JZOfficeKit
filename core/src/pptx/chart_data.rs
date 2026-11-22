@@ -43,6 +43,8 @@ pub(super) struct Chart<'a> {
     pub blanks: &'a str,
     pub date1904: bool,
     pub chart_type: ChartType,
+    /// 是否由 3D 图表（`pie3DChart`/`bar3DChart`/`line3DChart`/`area3DChart`）降维为 2D。
+    pub is_3d: bool,
 }
 
 pub(super) fn value<'a>(node: &'a Node, name: &str) -> &'a str {
@@ -114,42 +116,49 @@ impl<'a> Chart<'a> {
             return None;
         }
         let chart_node = charts[0];
-        let chart_type = match chart_node.name.as_str() {
-            "lineChart" => {
+        let (chart_type, is_3d) = match chart_node.name.as_str() {
+            "lineChart" | "line3DChart" => {
                 let grouping = match value(chart_node, "grouping") {
                     "" | "standard" => Grouping::Standard,
                     "stacked" => Grouping::Stacked,
                     "percentStacked" => Grouping::PercentStacked,
                     _ => return None,
                 };
-                ChartType::Line(grouping)
+                (ChartType::Line(grouping), chart_node.name == "line3DChart")
             }
-            "areaChart" => {
+            "areaChart" | "area3DChart" => {
                 let grouping = match value(chart_node, "grouping") {
                     "" | "standard" => Grouping::Standard,
                     "stacked" => Grouping::Stacked,
                     "percentStacked" => Grouping::PercentStacked,
                     _ => return None,
                 };
-                ChartType::Area(grouping)
+                (ChartType::Area(grouping), chart_node.name == "area3DChart")
             }
-            "barChart" => {
+            "barChart" | "bar3DChart" => {
                 let grouping = match value(chart_node, "grouping") {
                     "" | "clustered" | "standard" => Grouping::Standard,
                     "stacked" => Grouping::Stacked,
                     "percentStacked" => Grouping::PercentStacked,
                     _ => return None,
                 };
+                let is_3d = chart_node.name == "bar3DChart";
                 match value(chart_node, "barDir") {
-                    "col" => ChartType::Column(grouping),
-                    "bar" => ChartType::Bar(grouping),
+                    "col" => (ChartType::Column(grouping), is_3d),
+                    "bar" => (ChartType::Bar(grouping), is_3d),
                     _ => return None,
                 }
             }
-            "pieChart" => ChartType::Pie { hole_ratio: 0.0 },
-            "doughnutChart" => ChartType::Pie {
-                hole_ratio: hole_ratio(chart_node),
-            },
+            "pieChart" | "pie3DChart" => (
+                ChartType::Pie { hole_ratio: 0.0 },
+                chart_node.name == "pie3DChart",
+            ),
+            "doughnutChart" => (
+                ChartType::Pie {
+                    hole_ratio: hole_ratio(chart_node),
+                },
+                false,
+            ),
             _ => return None,
         };
         // 饼图与环形图不依赖坐标轴，缺少 catAx / valAx 也应正常渲染。
@@ -157,7 +166,8 @@ impl<'a> Chart<'a> {
         let axes: Vec<_> = plot
             .children
             .iter()
-            .filter(|n| n.name.ends_with("Ax"))
+            // 3D 图表允许附带深度系列轴 `<c:serAx>`，降维为 2D 时忽略该轴。
+            .filter(|n| n.name.ends_with("Ax") && !(is_3d && n.name == "serAx"))
             .collect();
         // 饼图/环形图允许完全没有坐标轴；其余图表要求分类轴与数值轴各一。
         let (x_axis, y_axis) = if no_axes && axes.is_empty() {
@@ -443,6 +453,7 @@ impl<'a> Chart<'a> {
             blanks,
             date1904: super::flag(value(root, "date1904"), false),
             chart_type,
+            is_3d,
         })
     }
 }

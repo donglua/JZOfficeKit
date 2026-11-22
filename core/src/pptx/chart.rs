@@ -37,31 +37,37 @@ impl Render<'_> {
                 .warn("PPTX charts with insufficient drawing space were omitted.");
             return Ok(Vec::new());
         }
-        match chart.chart_type {
-            ChartType::Line(_) => {
-                painter.render.doc.warn(
-                    "PPTX line charts use cached values; layout, markers and styling are simplified.",
-                );
-            }
-            ChartType::Area(_) => {
-                painter.render.doc.warn(
-                    "PPTX area charts use cached values; filled regions and styling are simplified.",
-                );
-            }
-            ChartType::Column(_) => {
-                painter.render.doc.warn(
-                    "PPTX column charts use cached values; layout, bars and styling are simplified.",
-                );
-            }
-            ChartType::Bar(_) => {
-                painter.render.doc.warn(
-                    "PPTX horizontal bar charts use cached values; layout, bars and styling are simplified.",
-                );
-            }
-            ChartType::Pie { .. } => {
-                painter.render.doc.warn(
-                    "PPTX pie and doughnut charts use cached values; sectors and styling are simplified.",
-                );
+        if chart.is_3d {
+            painter.render.doc.warn(
+                "PPTX 3D charts are flattened to 2D using cached values; perspective and styling are simplified.",
+            );
+        } else {
+            match chart.chart_type {
+                ChartType::Line(_) => {
+                    painter.render.doc.warn(
+                        "PPTX line charts use cached values; layout, markers and styling are simplified.",
+                    );
+                }
+                ChartType::Area(_) => {
+                    painter.render.doc.warn(
+                        "PPTX area charts use cached values; filled regions and styling are simplified.",
+                    );
+                }
+                ChartType::Column(_) => {
+                    painter.render.doc.warn(
+                        "PPTX column charts use cached values; layout, bars and styling are simplified.",
+                    );
+                }
+                ChartType::Bar(_) => {
+                    painter.render.doc.warn(
+                        "PPTX horizontal bar charts use cached values; layout, bars and styling are simplified.",
+                    );
+                }
+                ChartType::Pie { .. } => {
+                    painter.render.doc.warn(
+                        "PPTX pie and doughnut charts use cached values; sectors and styling are simplified.",
+                    );
+                }
             }
         }
         for element in &mut painter.elements {

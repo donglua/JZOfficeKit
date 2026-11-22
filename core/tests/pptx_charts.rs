@@ -710,6 +710,82 @@ fn stacked_and_percent_stacked_area_charts_render_non_overlapping_bands() -> Tes
     Ok(())
 }
 
+#[test]
+fn charts_3d_flatten_to_2d_with_optional_series_axis_and_warning() -> TestResult {
+    // 1. pie3DChart（无坐标轴）
+    let pie3d = r#"<?xml version="1.0" encoding="UTF-8"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+<c:chart><c:plotArea><c:layout/>
+<c:pie3DChart><c:ser><c:idx val="0"/><c:order val="0"/>
+<c:dPt><c:idx val="0"/><c:spPr><a:solidFill><a:srgbClr val="C03050"/></a:solidFill></c:spPr></c:dPt>
+<c:cat><c:strLit><c:ptCount val="2"/><c:pt idx="0"><c:v>A</c:v></c:pt><c:pt idx="1"><c:v>B</c:v></c:pt></c:strLit></c:cat>
+<c:val><c:numLit><c:ptCount val="2"/><c:pt idx="0"><c:v>70</c:v></c:pt><c:pt idx="1"><c:v>30</c:v></c:pt></c:numLit></c:val>
+</c:ser></c:pie3DChart></c:plotArea></c:chart></c:chartSpace>"#;
+    let doc_pie = document(pie3d)?;
+    let sectors = doc_pie.pages[0]
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, ElementType::PATH))
+        .count();
+    assert_eq!(sectors, 2, "pie3DChart should emit 2 flattened sectors");
+    assert!(doc_pie
+        .warnings
+        .iter()
+        .any(|w| w.contains("3D charts are flattened to 2D")));
+
+    // 2. bar3DChart（含可选 serAx 深度轴）
+    let bar3d = fixture::category_chart()
+        .replace(
+            "<c:lineChart><c:grouping val=\"standard\"/>",
+            "<c:bar3DChart><c:barDir val=\"col\"/><c:grouping val=\"clustered\"/>",
+        )
+        .replace(
+            "<c:axId val=\"200\"/></c:lineChart>",
+            "<c:axId val=\"200\"/><c:axId val=\"300\"/></c:bar3DChart>",
+        )
+        .replace(
+            "</c:valAx>",
+            "</c:valAx><c:serAx><c:axId val=\"300\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/><c:axPos val=\"b\"/><c:crossAx val=\"200\"/></c:serAx>",
+        );
+    let doc_bar = document(&bar3d)?;
+    let bar_count = doc_bar.pages[0]
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, ElementType::RECT) && e.fill == RED && e.width > 12.0)
+        .count();
+    assert_eq!(bar_count, 4, "bar3DChart with serAx should emit 4 RED bars");
+    assert!(doc_bar
+        .warnings
+        .iter()
+        .any(|w| w.contains("3D charts are flattened to 2D")));
+
+    // 3. line3DChart 与 area3DChart（含可选 serAx）
+    for (tag, is_area) in [("line3DChart", false), ("area3DChart", true)] {
+        let xml = fixture::category_chart()
+            .replace("<c:lineChart>", &format!("<c:{tag}>"))
+            .replace(
+                "<c:axId val=\"200\"/></c:lineChart>",
+                &format!("<c:axId val=\"200\"/><c:axId val=\"300\"/></c:{tag}>"),
+            )
+            .replace(
+                "</c:valAx>",
+                "</c:valAx><c:serAx><c:axId val=\"300\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:delete val=\"0\"/><c:axPos val=\"b\"/><c:crossAx val=\"200\"/></c:serAx>",
+            );
+        let doc = document(&xml)?;
+        let page = &doc.pages[0];
+        assert_eq!(data_segments(page, RED).len(), 3, "{tag} missing RED line");
+        if is_area {
+            assert_eq!(area_paths(page, RED).len(), 1, "{tag} missing RED area");
+        }
+        assert!(doc
+            .warnings
+            .iter()
+            .any(|w| w.contains("3D charts are flattened to 2D")));
+    }
+    Ok(())
+}
+
 fn area_chart() -> String {
     fixture::category_chart().replace("lineChart", "areaChart")
 }
