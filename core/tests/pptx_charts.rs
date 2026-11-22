@@ -155,27 +155,18 @@ fn malformed_value_caches_warn_without_fabricating_data_lines() -> TestResult {
 }
 
 #[test]
-fn unsupported_bar_and_stacked_charts_warn_without_data_lines() -> TestResult {
+fn unsupported_bar_and_unknown_charts_warn_without_data_lines() -> TestResult {
     for chart in [
         fixture::category_chart().replace("lineChart", "barChart"),
         fixture::category_chart()
             .replace(
                 "<c:lineChart><c:grouping val=\"standard\"/>",
-                "<c:barChart><c:barDir val=\"bar\"/><c:grouping val=\"clustered\"/>",
+                "<c:barChart><c:barDir val=\"col\"/><c:grouping val=\"unknown\"/>",
             )
             .replace("</c:lineChart>", "</c:barChart>"),
+        fixture::category_chart().replace("lineChart", "radarChart"),
         fixture::category_chart()
-            .replace(
-                "<c:lineChart><c:grouping val=\"standard\"/>",
-                "<c:barChart><c:barDir val=\"col\"/><c:grouping val=\"stacked\"/>",
-            )
-            .replace("</c:lineChart>", "</c:barChart>"),
-        fixture::category_chart()
-            .replace(r#"grouping val="standard""#, r#"grouping val="stacked""#),
-        fixture::category_chart().replace(
-            r#"grouping val="standard""#,
-            r#"grouping val="percentStacked""#,
-        ),
+            .replace(r#"grouping val="standard""#, r#"grouping val="unknown""#),
     ] {
         assert_omitted(&chart)?;
     }
@@ -417,13 +408,304 @@ fn area_chart_honors_blank_value_policies() -> TestResult {
 }
 
 #[test]
-fn stacked_area_charts_are_rejected_without_filled_regions() -> TestResult {
+fn stacked_horizontal_bar_chart_stacks_series_end_to_end() -> TestResult {
+    let chart_xml = fixture::category_chart()
+        .replace(
+            "<c:lineChart><c:grouping val=\"standard\"/>",
+            "<c:barChart><c:barDir val=\"bar\"/><c:grouping val=\"stacked\"/>",
+        )
+        .replace("</c:lineChart>", "</c:barChart>");
+
+    let document = document(&chart_xml)?;
+    let page = &document.pages[0];
+
+    let mut red_bars: Vec<_> = page
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, ElementType::RECT) && e.fill == RED && e.height > 8.0)
+        .collect();
+    let mut blue_bars: Vec<_> = page
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, ElementType::RECT) && e.fill == BLUE && e.height > 8.0)
+        .collect();
+    red_bars.sort_by(|a, b| a.y.total_cmp(&b.y));
+    blue_bars.sort_by(|a, b| a.y.total_cmp(&b.y));
+
+    assert_eq!(red_bars.len(), 4, "Expected 4 stacked RED segments");
+    assert_eq!(blue_bars.len(), 4, "Expected 4 stacked BLUE segments");
+
+    // 同一分类的两段条形应共行（相同 y 与 height）且首尾衔接（blue.x == red.x + red.width）
+    for (red, blue) in red_bars.iter().zip(&blue_bars) {
+        checks::near(red.y, blue.y);
+        checks::near(red.height, blue.height);
+        checks::near(red.x + red.width, blue.x);
+        assert!(red.width > 0.0 && blue.width > 0.0);
+        assert!(blue.x + blue.width <= FRAME[0] + FRAME[2] + 0.5);
+    }
+    // 堆积总和 [40, 45, 40, 40]：第 2 组（25+20=45）应比第 1 组（10+30=40）更宽
+    let total_0 = red_bars[0].width + blue_bars[0].width;
+    let total_1 = red_bars[1].width + blue_bars[1].width;
+    checks::near(total_1 / total_0, 45.0 / 40.0);
+    // 第 1 组中 BLUE(30) 宽度应为 RED(10) 的 3 倍
+    checks::near(blue_bars[0].width / red_bars[0].width, 3.0);
+    assert!(document
+        .warnings
+        .iter()
+        .any(|w| w.contains("horizontal bar charts")));
+    Ok(())
+}
+
+#[test]
+fn stacked_column_chart_stacks_series_vertically() -> TestResult {
+    let chart_xml = fixture::category_chart()
+        .replace(
+            "<c:lineChart><c:grouping val=\"standard\"/>",
+            "<c:barChart><c:barDir val=\"col\"/><c:grouping val=\"stacked\"/>",
+        )
+        .replace("</c:lineChart>", "</c:barChart>");
+
+    let document = document(&chart_xml)?;
+    let page = &document.pages[0];
+
+    let mut red_bars: Vec<_> = page
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, ElementType::RECT) && e.fill == RED && e.width > 12.0)
+        .collect();
+    let mut blue_bars: Vec<_> = page
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, ElementType::RECT) && e.fill == BLUE && e.width > 12.0)
+        .collect();
+    red_bars.sort_by(|a, b| a.x.total_cmp(&b.x));
+    blue_bars.sort_by(|a, b| a.x.total_cmp(&b.x));
+
+    assert_eq!(red_bars.len(), 4, "Expected 4 stacked RED column segments");
+    assert_eq!(
+        blue_bars.len(),
+        4,
+        "Expected 4 stacked BLUE column segments"
+    );
+
+    // 同一分类的两段柱形应共列（相同 x 与 width）且 BLUE 堆叠在 RED 上方
+    for (red, blue) in red_bars.iter().zip(&blue_bars) {
+        checks::near(red.x, blue.x);
+        checks::near(red.width, blue.width);
+        checks::near(blue.y + blue.height, red.y);
+        assert!(blue.y >= FRAME[1] - 0.5);
+    }
+    let total_0 = red_bars[0].height + blue_bars[0].height;
+    let total_1 = red_bars[1].height + blue_bars[1].height;
+    checks::near(total_1 / total_0, 45.0 / 40.0);
+    assert!(document
+        .warnings
+        .iter()
+        .any(|w| w.contains("column charts")));
+    Ok(())
+}
+
+#[test]
+fn percent_stacked_bar_and_column_charts_normalize_categories_to_full_span() -> TestResult {
+    for (dir, horizontal) in [("bar", true), ("col", false)] {
+        let chart_xml = fixture::category_chart()
+            .replace(
+                "<c:lineChart><c:grouping val=\"standard\"/>",
+                &format!(
+                    "<c:barChart><c:barDir val=\"{dir}\"/><c:grouping val=\"percentStacked\"/>"
+                ),
+            )
+            .replace("</c:lineChart>", "</c:barChart>");
+
+        let document = document(&chart_xml)?;
+        let page = &document.pages[0];
+
+        let mut red_bars: Vec<_> = page
+            .elements
+            .iter()
+            .filter(|e| {
+                matches!(e.kind, ElementType::RECT)
+                    && e.fill == RED
+                    && if horizontal {
+                        e.height > 8.0
+                    } else {
+                        e.width > 12.0
+                    }
+            })
+            .collect();
+        let mut blue_bars: Vec<_> = page
+            .elements
+            .iter()
+            .filter(|e| {
+                matches!(e.kind, ElementType::RECT)
+                    && e.fill == BLUE
+                    && if horizontal {
+                        e.height > 8.0
+                    } else {
+                        e.width > 12.0
+                    }
+            })
+            .collect();
+        if horizontal {
+            red_bars.sort_by(|a, b| a.y.total_cmp(&b.y));
+            blue_bars.sort_by(|a, b| a.y.total_cmp(&b.y));
+        } else {
+            red_bars.sort_by(|a, b| a.x.total_cmp(&b.x));
+            blue_bars.sort_by(|a, b| a.x.total_cmp(&b.x));
+        }
+        assert_eq!(red_bars.len(), 4, "{dir} percentStacked RED count");
+        assert_eq!(blue_bars.len(), 4, "{dir} percentStacked BLUE count");
+
+        // 4 个分类全为正数，归一化后总跨度应全部相等（100%）
+        let spans: Vec<f32> = red_bars
+            .iter()
+            .zip(&blue_bars)
+            .map(|(r, b)| {
+                if horizontal {
+                    r.width + b.width
+                } else {
+                    r.height + b.height
+                }
+            })
+            .collect();
+        for span in &spans[1..] {
+            checks::near(*span, spans[0]);
+        }
+        // Q1 为 10 vs 30 => 25% vs 75%
+        let ratio = if horizontal {
+            red_bars[0].width / spans[0]
+        } else {
+            red_bars[0].height / spans[0]
+        };
+        checks::near(ratio, 0.25);
+    }
+    Ok(())
+}
+
+#[test]
+fn stacked_bar_chart_separates_positive_and_negative_stacks_around_zero() -> TestResult {
+    let cat = r#"<c:cat><c:strLit><c:ptCount val="2"/><c:pt idx="0"><c:v>A</c:v></c:pt><c:pt idx="1"><c:v>B</c:v></c:pt></c:strLit></c:cat>"#;
+    let val_a = r#"<c:val><c:numLit><c:ptCount val="2"/><c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>-10</c:v></c:pt></c:numLit></c:val>"#;
+    let val_b = r#"<c:val><c:numLit><c:ptCount val="2"/><c:pt idx="0"><c:v>-20</c:v></c:pt><c:pt idx="1"><c:v>-10</c:v></c:pt></c:numLit></c:val>"#;
+    let bar_chart = format!(
+        r#"<c:barChart><c:barDir val="bar"/><c:grouping val="stacked"/>{}{}<c:axId val="100"/><c:axId val="200"/></c:barChart>"#,
+        fixture::series((0, "Pos", "C03050"), cat, val_a),
+        fixture::series((1, "Neg", "2070C0"), cat, val_b),
+    );
+    let chart_xml = fixture::category_chart()
+        .replace("<c:lineChart><c:grouping val=\"standard\"/>", &bar_chart)
+        .replace("</c:lineChart>", "");
+
+    let document = document(&chart_xml)?;
+    let page = &document.pages[0];
+    let mut red_bars: Vec<_> = page
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, ElementType::RECT) && e.fill == RED && e.height > 8.0)
+        .collect();
+    let mut blue_bars: Vec<_> = page
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, ElementType::RECT) && e.fill == BLUE && e.height > 8.0)
+        .collect();
+    red_bars.sort_by(|a, b| a.y.total_cmp(&b.y));
+    blue_bars.sort_by(|a, b| a.y.total_cmp(&b.y));
+    assert_eq!(red_bars.len(), 2);
+    assert_eq!(blue_bars.len(), 2);
+
+    // 分类 A：RED(+10) 在零线右侧，BLUE(-20) 在零线左侧，两者在零线相接
+    checks::near(blue_bars[0].x + blue_bars[0].width, red_bars[0].x);
+    // 分类 B：RED(-10) 与 BLUE(-10) 均在零线左侧，BLUE 紧接在 RED 左侧
+    checks::near(blue_bars[1].x + blue_bars[1].width, red_bars[1].x);
+    checks::near(red_bars[1].x + red_bars[1].width, red_bars[0].x);
+    Ok(())
+}
+
+#[test]
+fn stacked_and_percent_stacked_line_charts_accumulate_series_values() -> TestResult {
+    // Stacked line: RED=[10,25,15,30], BLUE=[10+30=40, 25+20=45, 15+25=40, 30+10=40]
+    let stacked = fixture::category_chart()
+        .replace(r#"grouping val="standard""#, r#"grouping val="stacked""#);
+    let doc_stacked = document(&stacked)?;
+    let page = &doc_stacked.pages[0];
+    let red_segs = data_segments(page, RED);
+    assert_eq!(red_segs.len(), 3, "RED stacked line should have 3 segments");
+    // BLUE 在 4 个分类处堆积值为 [40, 45, 40, 40]，第 1 段上升、第 2 段下降、第 3 段水平
+    let blue_all: Vec<_> = page
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, ElementType::LINE) && e.stroke == BLUE && e.width > 20.0)
+        .map(fixture::endpoints)
+        .collect();
+    assert_eq!(
+        blue_all.len(),
+        3,
+        "BLUE stacked line should have 3 segments"
+    );
+    // 第 1 分类处 BLUE(40) 必须在 RED(10) 上方（更小的 y）
+    let mut blue_sorted = blue_all;
+    blue_sorted.sort_by(|a, b| a[0].0.total_cmp(&b[0].0));
+    assert!(blue_sorted[0][0].1 < red_segs[0][0].1);
+    assert!(blue_sorted[0][1].1 < blue_sorted[0][0].1, "40 -> 45 rises");
+    assert!(blue_sorted[1][1].1 > blue_sorted[1][0].1, "45 -> 40 falls");
+    checks::near(blue_sorted[2][0].1, blue_sorted[2][1].1);
+
+    // Percent stacked line: BLUE 始终位于 100% 顶线（水平），RED 为 [0.25, 25/45, 0.375, 0.75]
+    let pct = fixture::category_chart().replace(
+        r#"grouping val="standard""#,
+        r#"grouping val="percentStacked""#,
+    );
+    let doc_pct = document(&pct)?;
+    let page_pct = &doc_pct.pages[0];
+    let red_pct = data_segments(page_pct, RED);
+    assert_eq!(red_pct.len(), 3);
+    let mut blue_pct: Vec<_> = page_pct
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, ElementType::LINE) && e.stroke == BLUE && e.width > 20.0)
+        .map(fixture::endpoints)
+        .collect();
+    blue_pct.sort_by(|a, b| a[0].0.total_cmp(&b[0].0));
+    assert_eq!(blue_pct.len(), 3);
+    for seg in &blue_pct {
+        checks::near(seg[0].1, seg[1].1);
+    }
+    assert!(blue_pct[0][0].1 < red_pct[0][0].1);
+    Ok(())
+}
+
+#[test]
+fn stacked_and_percent_stacked_area_charts_render_non_overlapping_bands() -> TestResult {
     for grouping in ["stacked", "percentStacked"] {
         let chart = area_chart().replace(
             r#"grouping val="standard""#,
             &format!(r#"grouping val="{grouping}""#),
         );
-        assert_omitted(&chart)?;
+        let doc = document(&chart)?;
+        let page = &doc.pages[0];
+        let red_areas = area_paths(page, RED);
+        let blue_areas = area_paths(page, BLUE);
+        assert_eq!(red_areas.len(), 1, "{grouping} expected 1 RED area path");
+        assert_eq!(blue_areas.len(), 1, "{grouping} expected 1 BLUE area path");
+        assert_eq!(path_command_count(red_areas[0], PathCommandKind::Close), 3);
+        assert_eq!(path_command_count(blue_areas[0], PathCommandKind::Close), 3);
+
+        // BLUE 堆积在 RED 之上：BLUE 的最小 y（顶部）应严格小于 RED 的最小 y
+        let min_y = |el: &jz_office_core::model::Element| -> f32 {
+            el.paths
+                .iter()
+                .flat_map(|p| &p.commands)
+                .filter_map(|c| match *c {
+                    PathCommand::Move([_, y]) | PathCommand::Line([_, y]) => Some(el.y + y),
+                    _ => None,
+                })
+                .fold(f32::MAX, f32::min)
+        };
+        assert!(
+            min_y(blue_areas[0]) < min_y(red_areas[0]),
+            "{grouping}: BLUE area band should sit above RED"
+        );
+        assert!(doc.warnings.iter().any(|w| w.contains("area charts")));
     }
     Ok(())
 }
@@ -478,6 +760,12 @@ fn assert_omitted(chart: &str) -> TestResult {
             !matches!(element.kind, ElementType::LINE) || ![RED, BLUE].contains(&element.stroke)
         }),
         "Rejected chart emitted series lines"
+    );
+    assert!(
+        document.pages[0].elements.iter().all(|element| {
+            !matches!(element.kind, ElementType::RECT) || ![RED, BLUE].contains(&element.fill)
+        }),
+        "Rejected chart emitted series bars"
     );
     assert!(document.pages[0].elements.iter().all(|element| {
         !matches!(element.kind, ElementType::PATH) || ![RED, BLUE].contains(&element.fill)

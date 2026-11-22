@@ -1,4 +1,4 @@
-use super::chart_data::{self, value, Chart, ChartType};
+use super::chart_data::{self, value, Chart, ChartType, Grouping};
 use super::geometry::{points, Bounds};
 use super::parts::Part;
 use super::render::Render;
@@ -38,22 +38,22 @@ impl Render<'_> {
             return Ok(Vec::new());
         }
         match chart.chart_type {
-            ChartType::Line => {
+            ChartType::Line(_) => {
                 painter.render.doc.warn(
                     "PPTX line charts use cached values; layout, markers and styling are simplified.",
                 );
             }
-            ChartType::Area => {
+            ChartType::Area(_) => {
                 painter.render.doc.warn(
                     "PPTX area charts use cached values; filled regions and styling are simplified.",
                 );
             }
-            ChartType::Column => {
+            ChartType::Column(_) => {
                 painter.render.doc.warn(
                     "PPTX column charts use cached values; layout, bars and styling are simplified.",
                 );
             }
-            ChartType::Bar => {
+            ChartType::Bar(_) => {
                 painter.render.doc.warn(
                     "PPTX horizontal bar charts use cached values; layout, bars and styling are simplified.",
                 );
@@ -133,8 +133,12 @@ impl ChartPaint<'_, '_> {
         let legend_height = legend_rows as f32 * legend_style.size * 1.7;
         let (left_margin, right_margin, bottom_margin) = match chart.chart_type {
             ChartType::Pie { .. } => (8.0, 8.0, 8.0),
-            ChartType::Bar => ((xs.size * 6.0).max(32.0), 12.0, ys.size * 2.8),
-            ChartType::Line | ChartType::Area | ChartType::Column => {
+            ChartType::Bar(_) => (
+                bar_left_margin(chart, xs.size, frame.width),
+                12.0,
+                ys.size * 2.8,
+            ),
+            ChartType::Line(_) | ChartType::Area(_) | ChartType::Column(_) => {
                 ((ys.size * 4.8).max(26.0), 12.0, xs.size * 2.8)
             }
         };
@@ -177,137 +181,26 @@ impl ChartPaint<'_, '_> {
         }
         self.axes(chart, plot, xs, ys);
         match chart.chart_type {
-            ChartType::Line => {
-                for (index, series) in chart.series.iter().enumerate() {
-                    let (color, width) =
-                        self.stroke(series.node, self.render.theme.accent(index), 1.5);
-                    let mut previous = None;
-                    for (i, value) in series.values.iter().enumerate() {
-                        let point = series
-                            .x(i)
-                            .zip(value.or((chart.blanks == "zero").then_some(0.0)))
-                            .map(|(x, y)| {
-                                (
-                                    fraction(x, chart.x_range, chart.x_axis),
-                                    1.0 - fraction(y, chart.y_range, chart.y_axis),
-                                )
-                            });
-                        if let Some(point) = point {
-                            if let Some(prior) = previous {
-                                if let Some((a, b)) = clip(prior, point) {
-                                    self.line(
-                                        (
-                                            plot.x + a.0 as f32 * plot.width,
-                                            plot.y + a.1 as f32 * plot.height,
-                                        ),
-                                        (
-                                            plot.x + b.0 as f32 * plot.width,
-                                            plot.y + b.1 as f32 * plot.height,
-                                        ),
-                                        color,
-                                        width,
-                                    );
-                                }
-                            }
-                            previous = Some(point);
-                        } else if chart.blanks != "span" {
-                            previous = None;
-                        }
+            ChartType::Line(grouping) => {
+                self.line_series(chart, plot, grouping);
+            }
+            ChartType::Area(grouping) => {
+                if grouping == Grouping::Standard {
+                    for index in 0..chart.series.len() {
+                        self.area_series(chart, plot, index);
                     }
+                } else {
+                    self.stacked_area_series(chart, plot, grouping);
                 }
             }
-            ChartType::Area => {
-                for index in 0..chart.series.len() {
-                    self.area_series(chart, plot, index);
-                }
-            }
-            ChartType::Bar => {
-                // 横向条形图：垂直方向按分类均分槽高，水平方向按数值比例从左向右延伸。
-                let category_count = chart.series.first().map_or(0, |s| s.values.len());
-                if category_count > 0 {
-                    let slot_height = plot.height / category_count as f32;
-                    let series_count = chart.series.len().max(1) as f32;
-                    let group_height = slot_height * 0.7;
-                    let bar_height = group_height / series_count;
-                    let group_offset = (slot_height - group_height) / 2.0;
-                    let zero_frac = fraction(0.0, chart.y_range, chart.y_axis);
-                    let zero_x = plot.x + zero_frac as f32 * plot.width;
-                    let baseline_x = zero_x.clamp(plot.x, plot.x + plot.width);
-
-                    for (s_idx, series) in chart.series.iter().enumerate() {
-                        let fill = self.series_fill(series.node, s_idx);
-                        for (i, value) in series.values.iter().enumerate() {
-                            let Some(v) = value.or((chart.blanks == "zero").then_some(0.0)) else {
-                                continue;
-                            };
-                            let v_frac = fraction(v, chart.y_range, chart.y_axis);
-                            let val_x = plot.x + v_frac as f32 * plot.width;
-                            let bar_left = val_x.min(baseline_x).clamp(plot.x, plot.x + plot.width);
-                            let bar_right =
-                                val_x.max(baseline_x).clamp(plot.x, plot.x + plot.width);
-                            let bar_w = (bar_right - bar_left).max(0.5);
-                            let bar_y = plot.y
-                                + i as f32 * slot_height
-                                + group_offset
-                                + s_idx as f32 * bar_height;
-                            self.elements.push(Element {
-                                kind: ElementType::RECT,
-                                x: bar_left,
-                                y: bar_y,
-                                width: bar_w,
-                                height: bar_height,
-                                fill,
-                                ..Element::default()
-                            });
-                        }
-                    }
-                }
+            ChartType::Bar(grouping) => {
+                self.bar_series(chart, plot, grouping);
             }
             ChartType::Pie { hole_ratio } => {
                 self.pie(chart, plot, hole_ratio);
             }
-            ChartType::Column => {
-                let category_count = chart.series.first().map_or(0, |s| s.values.len());
-                if category_count > 0 {
-                    let slot_width = plot.width / category_count as f32;
-                    let series_count = chart.series.len().max(1) as f32;
-                    let group_width = slot_width * 0.7;
-                    let bar_width = group_width / series_count;
-                    let group_offset = (slot_width - group_width) / 2.0;
-                    let zero_frac = fraction(0.0, chart.y_range, chart.y_axis);
-                    let zero_y = plot.y + (1.0 - zero_frac) as f32 * plot.height;
-                    let baseline_y = zero_y.clamp(plot.y, plot.y + plot.height);
-
-                    for (s_idx, series) in chart.series.iter().enumerate() {
-                        let fill = self.series_fill(series.node, s_idx);
-                        for (i, value) in series.values.iter().enumerate() {
-                            let y_val = value.or((chart.blanks == "zero").then_some(0.0));
-                            if let Some(y) = y_val {
-                                let y_frac = fraction(y, chart.y_range, chart.y_axis);
-                                let val_y = plot.y + (1.0 - y_frac) as f32 * plot.height;
-                                let bar_top =
-                                    val_y.min(baseline_y).clamp(plot.y, plot.y + plot.height);
-                                let bar_bottom =
-                                    val_y.max(baseline_y).clamp(plot.y, plot.y + plot.height);
-                                let bar_h = (bar_bottom - bar_top).max(0.5);
-                                let bar_x = plot.x
-                                    + i as f32 * slot_width
-                                    + group_offset
-                                    + s_idx as f32 * bar_width;
-
-                                self.elements.push(Element {
-                                    kind: ElementType::RECT,
-                                    x: bar_x,
-                                    y: bar_top,
-                                    width: bar_width,
-                                    height: bar_h,
-                                    fill,
-                                    ..Element::default()
-                                });
-                            }
-                        }
-                    }
-                }
+            ChartType::Column(grouping) => {
+                self.column_series(chart, plot, grouping);
             }
         }
         if legend.is_some() {
@@ -355,7 +248,7 @@ impl ChartPaint<'_, '_> {
                 let (color, width) = self.stroke(series.node, self.render.theme.accent(index), 1.5);
                 let y = frame.height - legend_height + row as f32 * legend_style.size * 1.7;
                 match chart.chart_type {
-                    ChartType::Line => {
+                    ChartType::Line(_) => {
                         self.line(
                             (plot.x, y + legend_style.size * 0.6),
                             (plot.x + 14.0, y + legend_style.size * 0.6),
@@ -364,9 +257,9 @@ impl ChartPaint<'_, '_> {
                         );
                     }
                     // 饼图/环形图已在上面的分类图例分支提前返回，此分支不会命中。
-                    ChartType::Area
-                    | ChartType::Column
-                    | ChartType::Bar
+                    ChartType::Area(_)
+                    | ChartType::Column(_)
+                    | ChartType::Bar(_)
                     | ChartType::Pie { .. } => {
                         let fill = self.series_fill(series.node, index);
                         self.elements.push(Element {
@@ -394,6 +287,340 @@ impl ChartPaint<'_, '_> {
             }
         }
         true
+    }
+
+    /// 折线图：支持标准、堆积与百分比堆积三种模式。
+    fn line_series(&mut self, chart: &Chart<'_>, plot: Plot, grouping: Grouping) {
+        for (s_idx, series) in chart.series.iter().enumerate() {
+            let (color, width) = self.stroke(series.node, self.render.theme.accent(s_idx), 1.5);
+            let mut previous = None;
+            for i in 0..series.values.len() {
+                let y_value = if grouping == Grouping::Standard {
+                    series_value(series, i, chart.blanks)
+                } else {
+                    series_value(series, i, chart.blanks).and_then(|_| {
+                        let denom = stack_denominator(chart, i, grouping)?;
+                        let sum: f64 = chart.series[..=s_idx]
+                            .iter()
+                            .filter_map(|s| series_value(s, i, chart.blanks))
+                            .sum();
+                        Some(sum / denom)
+                    })
+                };
+                let point = series.x(i).zip(y_value).map(|(x, y)| {
+                    (
+                        fraction(x, chart.x_range, chart.x_axis),
+                        1.0 - fraction(y, chart.y_range, chart.y_axis),
+                    )
+                });
+                if let Some(point) = point {
+                    if let Some(prior) = previous {
+                        if let Some((a, b)) = clip(prior, point) {
+                            self.line(
+                                (
+                                    plot.x + a.0 as f32 * plot.width,
+                                    plot.y + a.1 as f32 * plot.height,
+                                ),
+                                (
+                                    plot.x + b.0 as f32 * plot.width,
+                                    plot.y + b.1 as f32 * plot.height,
+                                ),
+                                color,
+                                width,
+                            );
+                        }
+                    }
+                    previous = Some(point);
+                } else if chart.blanks != "span" {
+                    previous = None;
+                }
+            }
+        }
+    }
+
+    /// 堆积/百分比堆积面积图：按正负方向分别累积分层带宽，避免自交并绘制顶部轮廓线。
+    fn stacked_area_series(&mut self, chart: &Chart<'_>, plot: Plot, grouping: Grouping) {
+        let category_count = chart.series.first().map_or(0, |s| s.values.len());
+        if category_count == 0 {
+            return;
+        }
+        let mut pos_acc = vec![0.0_f64; category_count];
+        let mut neg_acc = vec![0.0_f64; category_count];
+
+        for (s_idx, series) in chart.series.iter().enumerate() {
+            let (color, width) = self.stroke(series.node, self.render.theme.accent(s_idx), 1.5);
+            let fill = self.series_fill(series.node, s_idx);
+            let mut commands = Vec::new();
+            let mut lines = Vec::new();
+            let mut previous: Option<(f64, f64, f64)> = None;
+
+            for i in 0..category_count {
+                let band = series
+                    .x(i)
+                    .zip(series_value(series, i, chart.blanks))
+                    .and_then(|(x, raw)| {
+                        let denom = stack_denominator(chart, i, grouping)?;
+                        let v = raw / denom;
+                        let (lower, upper) = if v >= 0.0 {
+                            let base = pos_acc[i];
+                            pos_acc[i] = base + v;
+                            (base, pos_acc[i])
+                        } else {
+                            let top = neg_acc[i];
+                            neg_acc[i] = top + v;
+                            (neg_acc[i], top)
+                        };
+                        Some((
+                            fraction(x, chart.x_range, chart.x_axis),
+                            fraction(lower, chart.y_range, chart.y_axis),
+                            fraction(upper, chart.y_range, chart.y_axis),
+                        ))
+                    });
+
+                if let Some(curr) = band {
+                    if let Some(prev) = previous {
+                        let x0 = prev.0.clamp(0.0, 1.0);
+                        let x1 = curr.0.clamp(0.0, 1.0);
+                        if (x1 - x0).abs() > f64::EPSILON {
+                            let l0 = prev.1.clamp(0.0, 1.0);
+                            let u0 = prev.2.clamp(0.0, 1.0);
+                            let l1 = curr.1.clamp(0.0, 1.0);
+                            let u1 = curr.2.clamp(0.0, 1.0);
+                            if (u0 - l0).abs() > f64::EPSILON || (u1 - l1).abs() > f64::EPSILON {
+                                let p_l0 = chart_point(plot, (x0, l0));
+                                let p_u0 = chart_point(plot, (x0, u0));
+                                let p_u1 = chart_point(plot, (x1, u1));
+                                let p_l1 = chart_point(plot, (x1, l1));
+                                commands.push(PathCommand::Move([p_l0.0, p_l0.1]));
+                                commands.push(PathCommand::Line([p_u0.0, p_u0.1]));
+                                commands.push(PathCommand::Line([p_u1.0, p_u1.1]));
+                                commands.push(PathCommand::Line([p_l1.0, p_l1.1]));
+                                commands.push(PathCommand::Close);
+                            }
+                            if let Some((a, b)) = clip((prev.0, prev.2), (curr.0, curr.2)) {
+                                lines.push((chart_point(plot, a), chart_point(plot, b)));
+                            }
+                        }
+                    }
+                    previous = Some(curr);
+                } else if chart.blanks != "span" {
+                    previous = None;
+                }
+            }
+
+            if !commands.is_empty() {
+                self.elements.push(Element {
+                    kind: ElementType::PATH,
+                    x: 0.0,
+                    y: 0.0,
+                    width: plot.x * 2.0 + plot.width,
+                    height: plot.y * 2.0 + plot.height,
+                    fill,
+                    paths: vec![Path {
+                        fill: true,
+                        stroke: false,
+                        commands,
+                    }],
+                    ..Element::default()
+                });
+            }
+            for (a, b) in lines {
+                self.line(a, b, color, width);
+            }
+        }
+    }
+
+    /// 横向条形图：支持簇状、堆积与百分比堆积三种分组模式。
+    fn bar_series(&mut self, chart: &Chart<'_>, plot: Plot, grouping: Grouping) {
+        let category_count = chart.series.first().map_or(0, |s| s.values.len());
+        if category_count == 0 {
+            return;
+        }
+        let slot_height = plot.height / category_count as f32;
+        let group_height = slot_height * 0.7;
+        let group_offset = (slot_height - group_height) / 2.0;
+
+        if grouping == Grouping::Standard {
+            let series_count = chart.series.len().max(1) as f32;
+            let bar_height = group_height / series_count;
+            let zero_frac = fraction(0.0, chart.y_range, chart.y_axis);
+            let baseline_x =
+                (plot.x + zero_frac as f32 * plot.width).clamp(plot.x, plot.x + plot.width);
+
+            for (s_idx, series) in chart.series.iter().enumerate() {
+                let fill = self.series_fill(series.node, s_idx);
+                for (i, value) in series.values.iter().enumerate() {
+                    let Some(v) = value.or((chart.blanks == "zero").then_some(0.0)) else {
+                        continue;
+                    };
+                    let v_frac = fraction(v, chart.y_range, chart.y_axis);
+                    let val_x = plot.x + v_frac as f32 * plot.width;
+                    let bar_left = val_x.min(baseline_x).clamp(plot.x, plot.x + plot.width);
+                    let bar_right = val_x.max(baseline_x).clamp(plot.x, plot.x + plot.width);
+                    let bar_w = (bar_right - bar_left).max(0.5);
+                    let bar_y =
+                        plot.y + i as f32 * slot_height + group_offset + s_idx as f32 * bar_height;
+                    self.elements.push(Element {
+                        kind: ElementType::RECT,
+                        x: bar_left,
+                        y: bar_y,
+                        width: bar_w,
+                        height: bar_height,
+                        fill,
+                        ..Element::default()
+                    });
+                }
+            }
+            return;
+        }
+
+        let fills: Vec<u32> = chart
+            .series
+            .iter()
+            .enumerate()
+            .map(|(s_idx, series)| self.series_fill(series.node, s_idx))
+            .collect();
+        for i in 0..category_count {
+            let Some(denom) = stack_denominator(chart, i, grouping) else {
+                continue;
+            };
+            let mut pos_acc = 0.0;
+            let mut neg_acc = 0.0;
+            let bar_y = plot.y + i as f32 * slot_height + group_offset;
+            for (s_idx, series) in chart.series.iter().enumerate() {
+                let Some(raw) = series_value(series, i, chart.blanks) else {
+                    continue;
+                };
+                let v = raw / denom;
+                if v == 0.0 {
+                    continue;
+                }
+                let (start, end) = if v > 0.0 {
+                    let s = pos_acc;
+                    pos_acc += v;
+                    (s, pos_acc)
+                } else {
+                    let s = neg_acc;
+                    neg_acc += v;
+                    (s, neg_acc)
+                };
+                let f_start = fraction(start, chart.y_range, chart.y_axis);
+                let f_end = fraction(end, chart.y_range, chart.y_axis);
+                let lo = f_start.min(f_end).max(0.0);
+                let hi = f_start.max(f_end).min(1.0);
+                if hi <= lo {
+                    continue;
+                }
+                let bar_left = plot.x + lo as f32 * plot.width;
+                let bar_w = ((hi - lo) as f32 * plot.width).max(0.5);
+                self.elements.push(Element {
+                    kind: ElementType::RECT,
+                    x: bar_left,
+                    y: bar_y,
+                    width: bar_w,
+                    height: group_height,
+                    fill: fills[s_idx],
+                    ..Element::default()
+                });
+            }
+        }
+    }
+
+    /// 竖向柱状图：支持簇状、堆积与百分比堆积三种分组模式。
+    fn column_series(&mut self, chart: &Chart<'_>, plot: Plot, grouping: Grouping) {
+        let category_count = chart.series.first().map_or(0, |s| s.values.len());
+        if category_count == 0 {
+            return;
+        }
+        let slot_width = plot.width / category_count as f32;
+        let group_width = slot_width * 0.7;
+        let group_offset = (slot_width - group_width) / 2.0;
+
+        if grouping == Grouping::Standard {
+            let series_count = chart.series.len().max(1) as f32;
+            let bar_width = group_width / series_count;
+            let zero_frac = fraction(0.0, chart.y_range, chart.y_axis);
+            let baseline_y = (plot.y + (1.0 - zero_frac) as f32 * plot.height)
+                .clamp(plot.y, plot.y + plot.height);
+
+            for (s_idx, series) in chart.series.iter().enumerate() {
+                let fill = self.series_fill(series.node, s_idx);
+                for (i, value) in series.values.iter().enumerate() {
+                    let Some(y) = value.or((chart.blanks == "zero").then_some(0.0)) else {
+                        continue;
+                    };
+                    let y_frac = fraction(y, chart.y_range, chart.y_axis);
+                    let val_y = plot.y + (1.0 - y_frac) as f32 * plot.height;
+                    let bar_top = val_y.min(baseline_y).clamp(plot.y, plot.y + plot.height);
+                    let bar_bottom = val_y.max(baseline_y).clamp(plot.y, plot.y + plot.height);
+                    let bar_h = (bar_bottom - bar_top).max(0.5);
+                    let bar_x =
+                        plot.x + i as f32 * slot_width + group_offset + s_idx as f32 * bar_width;
+
+                    self.elements.push(Element {
+                        kind: ElementType::RECT,
+                        x: bar_x,
+                        y: bar_top,
+                        width: bar_width,
+                        height: bar_h,
+                        fill,
+                        ..Element::default()
+                    });
+                }
+            }
+            return;
+        }
+
+        let fills: Vec<u32> = chart
+            .series
+            .iter()
+            .enumerate()
+            .map(|(s_idx, series)| self.series_fill(series.node, s_idx))
+            .collect();
+        for i in 0..category_count {
+            let Some(denom) = stack_denominator(chart, i, grouping) else {
+                continue;
+            };
+            let mut pos_acc = 0.0;
+            let mut neg_acc = 0.0;
+            let bar_x = plot.x + i as f32 * slot_width + group_offset;
+            for (s_idx, series) in chart.series.iter().enumerate() {
+                let Some(raw) = series_value(series, i, chart.blanks) else {
+                    continue;
+                };
+                let v = raw / denom;
+                if v == 0.0 {
+                    continue;
+                }
+                let (start, end) = if v > 0.0 {
+                    let s = pos_acc;
+                    pos_acc += v;
+                    (s, pos_acc)
+                } else {
+                    let s = neg_acc;
+                    neg_acc += v;
+                    (s, neg_acc)
+                };
+                let f_start = fraction(start, chart.y_range, chart.y_axis);
+                let f_end = fraction(end, chart.y_range, chart.y_axis);
+                let lo = f_start.min(f_end).max(0.0);
+                let hi = f_start.max(f_end).min(1.0);
+                if hi <= lo {
+                    continue;
+                }
+                let bar_top = plot.y + (1.0 - hi) as f32 * plot.height;
+                let bar_h = ((hi - lo) as f32 * plot.height).max(0.5);
+                self.elements.push(Element {
+                    kind: ElementType::RECT,
+                    x: bar_x,
+                    y: bar_top,
+                    width: group_width,
+                    height: bar_h,
+                    fill: fills[s_idx],
+                    ..Element::default()
+                });
+            }
+        }
     }
 
     /// 标准面积图：各相邻有效点形成独立填充子路径，顶部轮廓沿用折线语义。
@@ -556,7 +783,7 @@ impl ChartPaint<'_, '_> {
         let (Some(x_axis), Some(y_axis)) = (chart.x_axis, chart.y_axis) else {
             return;
         };
-        if chart.chart_type == ChartType::Bar {
+        if matches!(chart.chart_type, ChartType::Bar(_)) {
             self.axes_bar(chart, plot, xs, ys, x_axis, y_axis);
             return;
         }
@@ -608,7 +835,8 @@ impl ChartPaint<'_, '_> {
                     offset
                 };
                 let Some(value) = first.x(i) else { continue };
-                let x = if chart.chart_type == ChartType::Column && first.dates.is_none() {
+                let x = if matches!(chart.chart_type, ChartType::Column(_)) && first.dates.is_none()
+                {
                     let slot_width = plot.width / first.values.len().max(1) as f32;
                     let center_x = plot.x + (i as f32 + 0.5) * slot_width;
                     (center_x - label_width / 2.0)
@@ -877,6 +1105,53 @@ impl ChartPaint<'_, '_> {
             ..Element::default()
         });
     }
+}
+
+fn series_value(series: &chart_data::Series<'_>, index: usize, blanks: &str) -> Option<f64> {
+    series
+        .values
+        .get(index)
+        .copied()
+        .flatten()
+        .or((blanks == "zero").then_some(0.0))
+}
+
+fn stack_denominator(chart: &Chart<'_>, index: usize, grouping: Grouping) -> Option<f64> {
+    if grouping != Grouping::PercentStacked {
+        return Some(1.0);
+    }
+    let total: f64 = chart
+        .series
+        .iter()
+        .filter_map(|series| series_value(series, index, chart.blanks))
+        .map(f64::abs)
+        .sum();
+    (total > 0.0 && total.is_finite()).then_some(total)
+}
+
+/// 根据分类标签估算横向条形图左侧留白，兼顾中文长标签且不挤占主绘图区。
+fn bar_left_margin(chart: &Chart<'_>, font_size: f32, frame_width: f32) -> f32 {
+    let base = (font_size * 6.0).max(32.0);
+    let max_label_width = chart
+        .series
+        .first()
+        .map(|series| {
+            series
+                .categories
+                .iter()
+                .flatten()
+                .map(|text| {
+                    let units: f32 = text
+                        .chars()
+                        .map(|ch| if ch.is_ascii() { 0.6 } else { 1.05 })
+                        .sum();
+                    units * font_size + 8.0
+                })
+                .fold(0.0_f32, f32::max)
+        })
+        .unwrap_or(0.0);
+    let max_cap = (frame_width * 0.35).max(base);
+    max_label_width.clamp(base, max_cap)
 }
 
 fn chart_point(plot: Plot, point: (f64, f64)) -> (f32, f32) {

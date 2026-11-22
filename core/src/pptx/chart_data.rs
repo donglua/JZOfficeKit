@@ -8,13 +8,21 @@ pub(super) struct Series<'a> {
     pub name: String,
 }
 
+/// 折线图、面积图、柱状图与条形图的分组堆叠模式（`<c:grouping val="...">`）。
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Grouping {
+    Standard,
+    Stacked,
+    PercentStacked,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum ChartType {
-    Line,
-    Area,
-    Column,
-    /// 横向条形图（`barChart` 且 `barDir="bar"`）
-    Bar,
+    Line(Grouping),
+    Area(Grouping),
+    Column(Grouping),
+    /// 横向条形图（`barChart` / `bar3DChart` 且 `barDir="bar"`）
+    Bar(Grouping),
     /// 饼图（`hole_ratio == 0.0`）与环形图（`hole_ratio > 0.0`）
     Pie {
         hole_ratio: f32,
@@ -108,24 +116,33 @@ impl<'a> Chart<'a> {
         let chart_node = charts[0];
         let chart_type = match chart_node.name.as_str() {
             "lineChart" => {
-                if !matches!(value(chart_node, "grouping"), "" | "standard") {
-                    return None;
-                }
-                ChartType::Line
+                let grouping = match value(chart_node, "grouping") {
+                    "" | "standard" => Grouping::Standard,
+                    "stacked" => Grouping::Stacked,
+                    "percentStacked" => Grouping::PercentStacked,
+                    _ => return None,
+                };
+                ChartType::Line(grouping)
             }
             "areaChart" => {
-                if !matches!(value(chart_node, "grouping"), "" | "standard") {
-                    return None;
-                }
-                ChartType::Area
+                let grouping = match value(chart_node, "grouping") {
+                    "" | "standard" => Grouping::Standard,
+                    "stacked" => Grouping::Stacked,
+                    "percentStacked" => Grouping::PercentStacked,
+                    _ => return None,
+                };
+                ChartType::Area(grouping)
             }
             "barChart" => {
-                if !matches!(value(chart_node, "grouping"), "" | "clustered" | "standard") {
-                    return None;
-                }
+                let grouping = match value(chart_node, "grouping") {
+                    "" | "clustered" | "standard" => Grouping::Standard,
+                    "stacked" => Grouping::Stacked,
+                    "percentStacked" => Grouping::PercentStacked,
+                    _ => return None,
+                };
                 match value(chart_node, "barDir") {
-                    "col" => ChartType::Column,
-                    "bar" => ChartType::Bar,
+                    "col" => ChartType::Column(grouping),
+                    "bar" => ChartType::Bar(grouping),
                     _ => return None,
                 }
             }
@@ -235,24 +252,175 @@ impl<'a> Chart<'a> {
         let mut xs = Vec::new();
         let mut ys = Vec::new();
         for series in &series {
-            for (i, y) in series.values.iter().enumerate() {
+            for i in 0..series.values.len() {
                 if let Some(x) = series.x(i) {
                     xs.push(x);
                 }
-                if let Some(y) = y.or((blanks == "zero").then_some(0.0)) {
-                    ys.push(y);
-                }
             }
         }
-        if matches!(chart_type, ChartType::Column | ChartType::Bar)
-            && !ys.is_empty()
-            && ys.iter().all(|&y| y >= 0.0)
-        {
-            ys.push(0.0);
-        }
-        // 面积区域始终相对零轴闭合；全负值系列也需要把零纳入自动数值范围。
-        if chart_type == ChartType::Area && !ys.is_empty() {
-            ys.push(0.0);
+        match chart_type {
+            ChartType::Line(Grouping::Stacked) => {
+                // 堆积折线图按系列顺序累加每个分类的累计值作为数值轴范围。
+                let max_len = series.iter().map(|s| s.values.len()).max().unwrap_or(0);
+                for i in 0..max_len {
+                    let mut acc = 0.0;
+                    let mut has_value = false;
+                    for s in &series {
+                        if let Some(v) = s
+                            .values
+                            .get(i)
+                            .copied()
+                            .flatten()
+                            .or((blanks == "zero").then_some(0.0))
+                        {
+                            has_value = true;
+                            acc += v;
+                            if !acc.is_finite() {
+                                return None;
+                            }
+                            ys.push(acc);
+                        }
+                    }
+                    if has_value && ys.iter().all(|&y| y >= 0.0) {
+                        ys.push(0.0);
+                    }
+                }
+            }
+            ChartType::Line(Grouping::PercentStacked) => {
+                // 百分比堆积折线图按分类绝对值总和归一化累计序列。
+                let max_len = series.iter().map(|s| s.values.len()).max().unwrap_or(0);
+                for i in 0..max_len {
+                    let total: f64 = series
+                        .iter()
+                        .filter_map(|s| {
+                            s.values
+                                .get(i)
+                                .copied()
+                                .flatten()
+                                .or((blanks == "zero").then_some(0.0))
+                        })
+                        .map(f64::abs)
+                        .sum();
+                    if !total.is_finite() {
+                        return None;
+                    }
+                    if total > 0.0 {
+                        let mut acc = 0.0;
+                        ys.push(0.0);
+                        for s in &series {
+                            if let Some(v) = s
+                                .values
+                                .get(i)
+                                .copied()
+                                .flatten()
+                                .or((blanks == "zero").then_some(0.0))
+                            {
+                                acc += v / total;
+                                ys.push(acc);
+                            }
+                        }
+                    } else if series.iter().any(|s| {
+                        s.values
+                            .get(i)
+                            .copied()
+                            .flatten()
+                            .or((blanks == "zero").then_some(0.0))
+                            .is_some()
+                    }) {
+                        ys.push(0.0);
+                    }
+                }
+            }
+            ChartType::Area(Grouping::Stacked)
+            | ChartType::Column(Grouping::Stacked)
+            | ChartType::Bar(Grouping::Stacked) => {
+                // 堆积面积/柱状/条形图按分类分别累加正负值，以堆积总和作为数值轴范围。
+                let max_len = series.iter().map(|s| s.values.len()).max().unwrap_or(0);
+                for i in 0..max_len {
+                    let mut pos = 0.0;
+                    let mut neg = 0.0;
+                    let mut has_value = false;
+                    for s in &series {
+                        if let Some(v) = s
+                            .values
+                            .get(i)
+                            .copied()
+                            .flatten()
+                            .or((blanks == "zero").then_some(0.0))
+                        {
+                            has_value = true;
+                            if v >= 0.0 {
+                                pos += v;
+                            } else {
+                                neg += v;
+                            }
+                        }
+                    }
+                    if !pos.is_finite() || !neg.is_finite() {
+                        return None;
+                    }
+                    if has_value {
+                        ys.push(pos);
+                        ys.push(neg);
+                    }
+                }
+            }
+            ChartType::Area(Grouping::PercentStacked)
+            | ChartType::Column(Grouping::PercentStacked)
+            | ChartType::Bar(Grouping::PercentStacked) => {
+                // 百分比堆积图按各分类绝对值总和归一化到 [-1.0, 1.0]。
+                let max_len = series.iter().map(|s| s.values.len()).max().unwrap_or(0);
+                for i in 0..max_len {
+                    let mut pos = 0.0;
+                    let mut neg = 0.0;
+                    let mut has_value = false;
+                    for s in &series {
+                        if let Some(v) = s
+                            .values
+                            .get(i)
+                            .copied()
+                            .flatten()
+                            .or((blanks == "zero").then_some(0.0))
+                        {
+                            has_value = true;
+                            if v >= 0.0 {
+                                pos += v;
+                            } else {
+                                neg += v;
+                            }
+                        }
+                    }
+                    let total = pos - neg;
+                    if !total.is_finite() {
+                        return None;
+                    }
+                    if total > 0.0 {
+                        ys.push(pos / total);
+                        ys.push(neg / total);
+                    } else if has_value {
+                        ys.push(0.0);
+                    }
+                }
+            }
+            _ => {
+                for series in &series {
+                    for y in &series.values {
+                        if let Some(y) = y.or((blanks == "zero").then_some(0.0)) {
+                            ys.push(y);
+                        }
+                    }
+                }
+                if matches!(chart_type, ChartType::Column(_) | ChartType::Bar(_))
+                    && !ys.is_empty()
+                    && ys.iter().all(|&y| y >= 0.0)
+                {
+                    ys.push(0.0);
+                }
+                // 面积区域始终相对零轴闭合；全负值系列也需要把零纳入自动数值范围。
+                if matches!(chart_type, ChartType::Area(_)) && !ys.is_empty() {
+                    ys.push(0.0);
+                }
+            }
         }
         // 饼图/环形图不使用坐标轴范围，按扇区求和绘制，这里给出占位范围。
         let (x_range, y_range, y_step) = match (x_axis, y_axis) {
