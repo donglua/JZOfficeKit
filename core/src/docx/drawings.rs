@@ -1,5 +1,7 @@
 use super::{alternate, Parser, MAX_COORDINATE};
-use crate::model::{Element, ElementType, ImageCrop, Paragraph, VerticalAlignment, WrapMode};
+use crate::model::{
+    Element, ElementType, ImageCrop, Paragraph, Path, PathCommand, VerticalAlignment, WrapMode,
+};
 use crate::xml::{self, Node};
 use crate::{Error, Result};
 
@@ -94,12 +96,17 @@ impl Parser<'_> {
         } else {
             None
         };
-        let pic_blip = if wgp.is_none() && wsp.is_none() {
+        let chart_ref = if wgp.is_none() && wsp.is_none() {
+            container.descendant("chart")
+        } else {
+            None
+        };
+        let pic_blip = if wgp.is_none() && wsp.is_none() && chart_ref.is_none() {
             container.descendant("blip")
         } else {
             None
         };
-        if wgp.is_none() && wsp.is_none() && pic_blip.is_none() {
+        if wgp.is_none() && wsp.is_none() && chart_ref.is_none() && pic_blip.is_none() {
             self.document
                 .warn("Non-image drawings, charts and diagrams are omitted.");
             return Ok(());
@@ -117,6 +124,12 @@ impl Parser<'_> {
                 layout.apply(&mut element);
                 self.push_drawing_element(element, out)?;
             }
+        } else if let Some(chart) = chart_ref {
+            let mut chart_elements = self.parse_chart(chart, width, height)?;
+            for element in &mut chart_elements {
+                normalize_docx_chart_line(element);
+            }
+            self.push_group_elements(chart_elements, layout, height, out)?;
         } else if let Some(blip) = pic_blip {
             let src_rect = container.descendant("srcRect");
             if let Some(mut element) = self.resolve_image_element(blip, src_rect, width, height) {
@@ -125,6 +138,37 @@ impl Parser<'_> {
             }
         }
         Ok(())
+    }
+
+    fn parse_chart(&mut self, reference: &Node, width: f32, height: f32) -> Result<Vec<Element>> {
+        let Some(target) = self
+            .relationships
+            .get(crate::pptx::relation_id(reference, "id"))
+            .filter(|path| self.package.has(path))
+            .cloned()
+        else {
+            self.document
+                .warn("DOCX charts with missing or external parts were omitted.");
+            return Ok(Vec::new());
+        };
+        let root = self.package.xml(&target)?;
+        let mut text_bytes = self.text_bytes;
+        let rendered = crate::chart::render(
+            &root,
+            width,
+            height,
+            &self.styles.theme,
+            &mut self.document,
+            &mut |bytes| {
+                text_bytes += bytes;
+                if text_bytes > super::MAX_TEXT {
+                    return Err(Error::Limit("DOCX text exceeds 8 MiB"));
+                }
+                Ok(())
+            },
+        );
+        self.text_bytes = text_bytes;
+        Ok(rendered?.unwrap_or_default())
     }
 
     fn push_drawing_element(&self, element: Element, out: &mut Vec<Element>) -> Result<()> {
@@ -170,10 +214,16 @@ impl Parser<'_> {
 
         let is_stacked_group =
             matches!(layout.wrap_mode, WrapMode::TopAndBottom | WrapMode::Inline);
+        // inline 多元素会被拆为 None/TopAndBottom 定位，需补上左页边距以免贴到页面最左侧
+        let origin_x = if layout.wrap_mode == WrapMode::Inline {
+            self.effective_margin(self.document.margin_left)
+        } else {
+            layout.x
+        };
         for (idx, mut item) in items.into_iter().enumerate() {
             let mapped_y = item.y;
             let mapped_h = item.height;
-            item.x += layout.x;
+            item.x += origin_x;
             item.horizontal_align = 0;
             item.behind_doc = layout.behind_doc;
             if is_stacked_group {
@@ -782,6 +832,32 @@ fn parse_position_v(
 }
 
 const MIN_SOURCE_FRACTION: f32 = 0.001;
+
+/// 将图表中的翻转线段规范化为 PATH，避免 Android 流式排版 preTranslate 在 flip_v 下反向平移
+fn normalize_docx_chart_line(element: &mut Element) {
+    if !matches!(element.kind, ElementType::LINE) || (!element.flip_h && !element.flip_v) {
+        return;
+    }
+    let (sx, ex) = if element.flip_h {
+        (element.width, 0.0)
+    } else {
+        (0.0, element.width)
+    };
+    let (sy, ey) = if element.flip_v {
+        (element.height, 0.0)
+    } else {
+        (0.0, element.height)
+    };
+    element.kind = ElementType::PATH;
+    element.flip_h = false;
+    element.flip_v = false;
+    element.transform = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    element.paths = vec![Path {
+        fill: false,
+        stroke: true,
+        commands: vec![PathCommand::Move([sx, sy]), PathCommand::Line([ex, ey])],
+    }];
+}
 
 fn parse_vml_dimensions(style: &str) -> (f32, f32) {
     let mut width = 0.0;

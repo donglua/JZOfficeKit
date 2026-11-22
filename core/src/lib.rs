@@ -1,3 +1,4 @@
+mod chart;
 mod docx;
 mod metadata;
 pub mod model;

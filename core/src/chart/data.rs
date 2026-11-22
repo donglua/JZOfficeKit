@@ -454,7 +454,7 @@ impl<'a> Chart<'a> {
             y_range,
             y_step,
             blanks,
-            date1904: super::flag(value(root, "date1904"), false),
+            date1904: crate::pptx::flag(value(root, "date1904"), false),
             chart_type,
             is_3d,
         })

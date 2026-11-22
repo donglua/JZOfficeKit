@@ -1,9 +1,8 @@
 mod chart;
-mod chart_data;
 pub(crate) mod colors;
 mod diagram;
 pub(crate) mod drawing;
-mod geometry;
+pub(crate) mod geometry;
 mod gradient;
 mod inheritance;
 mod numbering;
@@ -16,7 +15,7 @@ pub(crate) mod styles;
 mod table;
 mod text;
 mod text_fill;
-mod text_style;
+pub(crate) mod text_style;
 mod transform;
 mod unsupported;
 
@@ -160,12 +159,12 @@ pub(crate) fn slide_dimension(value: &str) -> Result<f32> {
         .ok_or(Error::Invalid("Invalid PPTX slide dimensions"))
 }
 
-fn relation_id<'a>(node: &'a Node, name: &str) -> &'a str {
+pub(crate) fn relation_id<'a>(node: &'a Node, name: &str) -> &'a str {
     node.get_attr(&format!("r:{name}"))
         .unwrap_or_else(|| node.attr(name))
 }
 
-fn flag(value: &str, default: bool) -> bool {
+pub(crate) fn flag(value: &str, default: bool) -> bool {
     match value {
         "1" | "true" | "on" => true,
         "0" | "false" | "off" => false,

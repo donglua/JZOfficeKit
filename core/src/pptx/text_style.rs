@@ -6,13 +6,13 @@ use crate::model::{
 };
 use crate::xml::{number, Node};
 
-pub(super) struct TextStyle<'a> {
+pub(crate) struct TextStyle<'a> {
     pub doc: &'a mut Document,
     pub theme: &'a Theme,
 }
 
 impl TextStyle<'_> {
-    pub fn run(&mut self, run: &mut Run, properties: Option<&Node>) {
+    pub(crate) fn run(&mut self, run: &mut Run, properties: Option<&Node>) {
         let Some(properties) = properties else { return };
         if !properties.attr("sz").is_empty() {
             run.size = (number(properties.attr("sz"), run.size * 100.0) / 100.0).clamp(1.0, 400.0);

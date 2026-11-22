@@ -5,7 +5,7 @@ use crate::xml::{number, Node};
 
 const MAX_POINT: f32 = 100_000.0;
 
-pub(super) fn points(value: &str) -> Option<f32> {
+pub(crate) fn points(value: &str) -> Option<f32> {
     value
         .parse::<f32>()
         .ok()

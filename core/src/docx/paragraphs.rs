@@ -149,7 +149,10 @@ impl Parser<'_> {
                 }
                 "footnoteRef" | "endnoteRef" => self.note_mark(font, flow)?,
                 "drawing" => {
-                    for image in self.drawings(node)? {
+                    self.text_bytes = flow.text_bytes;
+                    let images = self.drawings(node)?;
+                    flow.text_bytes = self.text_bytes;
+                    for image in images {
                         if flow.in_cell {
                             flow.cell_image(image)?;
                         } else {
