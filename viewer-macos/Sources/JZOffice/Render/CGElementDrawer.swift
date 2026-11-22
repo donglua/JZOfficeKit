@@ -1040,6 +1040,19 @@ public enum CGElementDrawer {
         return attr
     }
 
+    private static let installedFontNames: Set<String> = {
+        var names = Set(NSFontManager.shared.availableFontFamilies)
+        names.formUnion(NSFontManager.shared.availableFonts)
+        return Set(names.map { $0.lowercased() })
+    }()
+
+    private static func existingNSFont(name: String, size: CGFloat) -> NSFont? {
+        guard name == "PingFang SC" || installedFontNames.contains(name.lowercased()) else {
+            return nil
+        }
+        return NSFont(name: name, size: size)
+    }
+
     public static func resolveNSFont(face: String, size: CGFloat, bold: Bool, italic: Bool, weight: Int = 0) -> NSFont {
         let trimmed = face.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = "\(trimmed)#\(size)#\(bold)#\(italic)#\(weight)"
@@ -1056,19 +1069,19 @@ public enum CGElementDrawer {
 
         var font: NSFont?
         if !trimmed.isEmpty {
-            font = NSFont(name: trimmed, size: size)
+            font = existingNSFont(name: trimmed, size: size)
             if font == nil && (lower.contains("fangsong") || lower.contains("仿宋")) {
-                font = NSFont(name: "STFangsong", size: size) ?? NSFont(name: "Songti SC", size: size) ?? NSFont(name: "Times New Roman", size: size)
+                font = existingNSFont(name: "STFangsong", size: size) ?? existingNSFont(name: "Songti SC", size: size) ?? existingNSFont(name: "Times New Roman", size: size)
             } else if font == nil && (lower.contains("song") || lower.contains("宋体") || lower.contains("mincho") || lower.contains("simsun") || lower.contains("source han serif") || lower.contains("noto serif")) {
-                font = NSFont(name: "Songti SC", size: size) ?? NSFont(name: "STSong", size: size) ?? NSFont(name: "Times New Roman", size: size) ?? NSFont(name: "Georgia", size: size)
+                font = existingNSFont(name: "Songti SC", size: size) ?? existingNSFont(name: "STSong", size: size) ?? existingNSFont(name: "Times New Roman", size: size) ?? existingNSFont(name: "Georgia", size: size)
             } else if font == nil && (lower.contains("times") || lower.contains("georgia") || lower.contains("cambria") || lower.contains("palatino") || lower.contains("garamond") || (lower.contains("serif") && !lower.contains("sans"))) {
-                font = NSFont(name: "Times New Roman", size: size) ?? NSFont(name: "Georgia", size: size)
+                font = existingNSFont(name: "Times New Roman", size: size) ?? existingNSFont(name: "Georgia", size: size)
             } else if font == nil && (lower.contains("mono") || lower.contains("consolas") || lower.contains("courier") || lower.contains("menlo") || lower.contains("monaco") || lower.contains("fira code") || lower.contains("jetbrains")) {
                 font = NSFont.monospacedSystemFont(ofSize: size, weight: targetWeight)
             } else if font == nil && (lower.contains("kai") || lower.contains("楷") || lower.contains("lisu") || lower.contains("隶书") || lower.contains("cursive") || lower.contains("comic")) {
-                font = NSFont(name: "Kaiti SC", size: size) ?? NSFont(name: "STKaiti", size: size) ?? NSFont(name: "Comic Sans MS", size: size)
+                font = existingNSFont(name: "Kaiti SC", size: size) ?? existingNSFont(name: "STKaiti", size: size) ?? existingNSFont(name: "Comic Sans MS", size: size)
             } else if font == nil && (lower.contains("hei") || lower.contains("黑") || lower.contains("yahei") || lower.contains("雅黑") || lower.contains("dengxian") || lower.contains("等线") || lower.contains("youyuan") || lower.contains("幼圆") || lower.contains("source han sans") || lower.contains("noto sans")) {
-                font = NSFont(name: "PingFang SC", size: size)
+                font = existingNSFont(name: "PingFang SC", size: size)
             }
         }
 

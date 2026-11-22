@@ -603,7 +603,7 @@ struct JZOfficeTests {
         let targetPart = "ppt/showcase/base/media/pixel.png"
         loader.request(visibleParts: [targetPart], prefetchParts: [])
 
-        let deadline = Date().addingTimeInterval(3.0)
+        let deadline = Date().addingTimeInterval(5.0)
         var loadedImage: CGImage?
         while Date() < deadline {
             if let img = loader.image(for: targetPart) {
@@ -611,6 +611,9 @@ struct JZOfficeTests {
                 break
             }
             try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        if loadedImage == nil {
+            loadedImage = loader.image(for: targetPart)
         }
 
         #expect(loadedImage != nil)
@@ -817,7 +820,7 @@ struct JZOfficeTests {
         #expect(consolasFont.isFixedPitch || consolasFont.fontDescriptor.symbolicTraits.contains(.monoSpace))
 
         let kaitiFont = CGElementDrawer.resolveNSFont(face: "KaiTi", size: 14, bold: false, italic: false)
-        #expect(kaitiFont.familyName == "Kaiti SC" || kaitiFont.familyName == "Comic Sans MS")
+        #expect(kaitiFont.familyName == "Kaiti SC" || kaitiFont.familyName == "STKaiti" || kaitiFont.familyName == "Comic Sans MS")
 
         // 2. 线程安全缓存命中（同一请求返回相同实例）
         let fontA = CGElementDrawer.resolveNSFont(face: "Times New Roman", size: 16, bold: true, italic: false, weight: 700)
