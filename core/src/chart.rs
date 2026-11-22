@@ -101,6 +101,32 @@ struct Plot {
     height: f32,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum LegendPos {
+    Bottom,
+    Top,
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy)]
+enum LegendSwatch {
+    Rect(u32),
+    Line(u32, f32),
+}
+
+struct LegendItem {
+    name: String,
+    swatch: LegendSwatch,
+}
+
+/// 图表四周留白与图例框上下文，供标题与坐标轴共用边界
+#[derive(Clone, Copy)]
+struct FrameInsets {
+    left_inset: f32,
+    right_limit: f32,
+}
+
 impl ChartPaint<'_> {
     fn draw(&mut self, root: &Node, chart: &Chart<'_>, width: f32, height: f32) -> bool {
         let Some(primary) = chart.sub_charts.first() else {
@@ -127,39 +153,42 @@ impl ChartPaint<'_> {
             chart.sub_charts.len() == 1 && matches!(primary.chart_type, ChartType::Pie { .. });
         let is_radar =
             chart.sub_charts.len() == 1 && matches!(primary.chart_type, ChartType::Radar(_));
-        let pie_entries: Vec<(usize, String)> = if is_pie {
-            let first = &primary.series[0];
-            first
-                .values
-                .iter()
-                .enumerate()
-                .filter(|(i, v)| v.is_some_and(|v| v > 0.0) && first.categories[*i].is_some())
-                .map(|(i, _)| (i, first.categories[i].unwrap_or_default().to_string()))
-                .collect()
+        let legend_items = if legend.is_some() {
+            self.collect_legend_items(chart, primary, is_pie)
         } else {
             Vec::new()
         };
-        let named: Vec<(ChartType, &chart_data::Series<'_>)> = chart
-            .sub_charts
-            .iter()
-            .flat_map(|sub| {
-                sub.series
-                    .iter()
-                    .filter(|s| !s.name.is_empty())
-                    .map(move |s| (sub.chart_type, s))
-            })
-            .collect();
-        let legend_rows = if legend.is_some() {
-            if is_pie {
-                pie_entries.len()
-            } else {
-                named.len()
-            }
+        let legend_pos = legend.map_or(LegendPos::Bottom, |n| match value(n, "legendPos") {
+            "t" => LegendPos::Top,
+            "l" => LegendPos::Left,
+            "r" | "tr" => LegendPos::Right,
+            _ => LegendPos::Bottom,
+        });
+        let legend_overlay = legend.is_some_and(|n| flag(value(n, "overlay"), false));
+        let legend_row_h = legend_style.size * 1.7;
+        let legend_rows_h = legend_items.len() as f32 * legend_row_h;
+        let legend_side_w = if legend_items.is_empty() {
+            0.0
         } else {
-            0
+            let max_label_w = legend_items
+                .iter()
+                .map(|item| estimate_label_width(&item.name, legend_style.size))
+                .fold(0.0_f32, f32::max);
+            (max_label_w + 26.0).clamp(52.0, (width * 0.34).max(52.0))
         };
-        let legend_height = legend_rows as f32 * legend_style.size * 1.7;
-        let (left_margin, right_margin, bottom_margin) = if is_pie || is_radar {
+        let (left_legend, right_legend, top_legend, bottom_legend) =
+            if legend_items.is_empty() || legend_overlay {
+                (0.0, 0.0, 0.0, 0.0)
+            } else {
+                match legend_pos {
+                    LegendPos::Left => (legend_side_w, 0.0, 0.0, 0.0),
+                    LegendPos::Right => (0.0, legend_side_w, 0.0, 0.0),
+                    LegendPos::Top => (0.0, 0.0, legend_rows_h, 0.0),
+                    LegendPos::Bottom => (0.0, 0.0, 0.0, legend_rows_h),
+                }
+            };
+
+        let (base_left, base_right, base_bottom) = if is_pie || is_radar {
             (8.0, 8.0, 8.0)
         } else if matches!(primary.chart_type, ChartType::Bar(_)) {
             (
@@ -176,16 +205,16 @@ impl ChartPaint<'_> {
             };
             ((ys.size * 4.8).max(26.0), right, xs.size * 2.8)
         };
-        let top_margin = if title_text.is_empty() {
+        let base_top = if title_text.is_empty() {
             8.0
         } else {
             title_style.size * 2.5
         };
         let plot = Plot {
-            x: left_margin,
-            y: top_margin,
-            width: width - left_margin - right_margin,
-            height: height - bottom_margin - legend_height - top_margin,
+            x: base_left + left_legend,
+            y: base_top + top_legend,
+            width: width - base_left - base_right - left_legend - right_legend,
+            height: height - base_bottom - base_top - top_legend - bottom_legend,
         };
         if plot.width < 24.0 || plot.height < 16.0 {
             return false;
@@ -208,13 +237,17 @@ impl ChartPaint<'_> {
                     x: 4.0,
                     y: 2.0,
                     width: width - 8.0,
-                    height: plot.y - 3.0,
+                    height: (base_top - 3.0).max(4.0),
                 },
                 1,
             );
         }
+        let insets = FrameInsets {
+            left_inset: left_legend,
+            right_limit: width - right_legend,
+        };
         if !is_radar {
-            self.axes(chart, plot, width, xs.clone(), ys.clone(), sec_ys);
+            self.axes(chart, plot, insets, xs.clone(), ys.clone(), sec_ys);
         }
         for sub in &chart.sub_charts {
             match sub.chart_type {
@@ -264,92 +297,136 @@ impl ChartPaint<'_> {
                 }
             }
         }
-        if legend.is_some() {
-            // 饼图/环形图的图例按分类名逐项生成，色块取对应扇区颜色。
-            if is_pie {
-                let first = &primary.series[0];
-                let colors = self.sector_colors(first);
-                let row_height = legend_style.size * 1.7;
-                for (row, (index, name)) in pie_entries.iter().enumerate() {
-                    let y = height - (pie_entries.len() as f32 - row as f32) * row_height
-                        + legend_style.size * 0.2;
+        self.draw_legend(
+            &legend_items,
+            legend_pos,
+            legend_style,
+            plot,
+            width,
+            height,
+            base_top,
+            legend_side_w,
+            legend_rows_h,
+        );
+        true
+    }
+
+    fn collect_legend_items(
+        &mut self,
+        chart: &Chart<'_>,
+        primary: &SubChart<'_>,
+        is_pie: bool,
+    ) -> Vec<LegendItem> {
+        if is_pie {
+            let first = &primary.series[0];
+            let colors = self.sector_colors(first);
+            return first
+                .values
+                .iter()
+                .enumerate()
+                .filter(|(i, v)| v.is_some_and(|v| v > 0.0) && first.categories[*i].is_some())
+                .map(|(i, _)| {
                     let fill = colors
-                        .get(*index)
+                        .get(i)
                         .copied()
-                        .unwrap_or_else(|| self.theme.accent(*index));
-                    self.elements.push(Element {
-                        kind: ElementType::RECT,
-                        x: plot.x,
-                        y,
-                        width: 12.0,
-                        height: legend_style.size * 0.8,
-                        fill,
-                        ..Element::default()
-                    });
-                    self.label(
-                        name.clone(),
-                        legend_style.clone(),
-                        Plot {
-                            x: plot.x + 18.0,
-                            y: y - legend_style.size * 0.2,
-                            width: width - plot.x - 22.0,
-                            height: legend_style.size * 1.6,
-                        },
-                        0,
-                    );
-                }
-                return true;
-            }
-            for (row, &(sub_type, series)) in named.iter().enumerate() {
+                        .unwrap_or_else(|| self.theme.accent(i));
+                    LegendItem {
+                        name: first.categories[i].unwrap_or_default().to_string(),
+                        swatch: LegendSwatch::Rect(fill),
+                    }
+                })
+                .collect();
+        }
+        let mut items = Vec::new();
+        for sub in &chart.sub_charts {
+            for series in sub.series.iter().filter(|s| !s.name.is_empty()) {
                 let index = series.color_index;
-                let (color, line_w) = self.stroke(series.node, self.theme.accent(index), 1.5);
-                let y = height - legend_height + row as f32 * legend_style.size * 1.7;
-                match sub_type {
+                let swatch = match sub.chart_type {
                     ChartType::Line(_)
                     | ChartType::Scatter(_)
                     | ChartType::Radar(RadarStyle::Standard | RadarStyle::Marker) => {
-                        self.line(
-                            (plot.x, y + legend_style.size * 0.6),
-                            (plot.x + 14.0, y + legend_style.size * 0.6),
-                            color,
-                            line_w,
-                        );
+                        let (color, line_w) =
+                            self.stroke(series.node, self.theme.accent(index), 1.5);
+                        LegendSwatch::Line(color, line_w)
                     }
-                    // 饼图/环形图已在上面的分类图例分支提前返回，此分支不会命中。
                     ChartType::Area(_)
                     | ChartType::Column(_)
                     | ChartType::Bar(_)
                     | ChartType::Radar(RadarStyle::Filled)
                     | ChartType::Pie { .. } => {
-                        let fill = self.series_fill(series.node, index);
-                        self.elements.push(Element {
-                            kind: ElementType::RECT,
-                            x: plot.x,
-                            y: y + legend_style.size * 0.2,
-                            width: 12.0,
-                            height: legend_style.size * 0.8,
-                            fill,
-                            ..Element::default()
-                        });
+                        LegendSwatch::Rect(self.series_fill(series.node, index))
                     }
-                }
-                self.label(
-                    series.name.clone(),
-                    legend_style.clone(),
-                    Plot {
-                        x: plot.x + 18.0,
-                        y,
-                        width: width - plot.x - 22.0,
-                        height: legend_style.size * 1.6,
-                    },
-                    0,
-                );
+                };
+                items.push(LegendItem {
+                    name: series.name.clone(),
+                    swatch,
+                });
             }
         }
-        true
+        items
     }
 
-    /// 折线图：支持标准、堆积与百分比堆积三种模式。
+    #[allow(clippy::too_many_arguments)]
+    fn draw_legend(
+        &mut self,
+        items: &[LegendItem],
+        pos: LegendPos,
+        style: Run,
+        plot: Plot,
+        width: f32,
+        height: f32,
+        base_top: f32,
+        side_w: f32,
+        rows_h: f32,
+    ) {
+        if items.is_empty() {
+            return;
+        }
+        let row_h = style.size * 1.7;
+        let (start_x, start_y, max_w) = match pos {
+            LegendPos::Bottom => (plot.x, height - rows_h, (width - plot.x - 4.0).max(1.0)),
+            LegendPos::Top => (plot.x, base_top, (width - plot.x - 4.0).max(1.0)),
+            LegendPos::Left => (6.0, plot.y, (side_w - 10.0).max(16.0)),
+            LegendPos::Right => (width - side_w + 4.0, plot.y, (side_w - 8.0).max(16.0)),
+        };
+        for (row, item) in items.iter().enumerate() {
+            let y = start_y + row as f32 * row_h;
+            match item.swatch {
+                LegendSwatch::Line(color, line_w) => {
+                    self.line(
+                        (start_x, y + style.size * 0.6),
+                        (start_x + 14.0, y + style.size * 0.6),
+                        color,
+                        line_w,
+                    );
+                }
+                LegendSwatch::Rect(fill) => {
+                    self.elements.push(Element {
+                        kind: ElementType::RECT,
+                        x: start_x,
+                        y: y + style.size * 0.2,
+                        width: 12.0,
+                        height: style.size * 0.8,
+                        fill,
+                        ..Element::default()
+                    });
+                }
+            }
+            self.label(
+                item.name.clone(),
+                style.clone(),
+                Plot {
+                    x: start_x + 18.0,
+                    y,
+                    width: (max_w - 18.0).max(12.0),
+                    height: style.size * 1.6,
+                },
+                0,
+            );
+        }
+    }
+
+    /// 折线图：支持标准、堆积与百分比堆积三种模式，并在显式声明标记符号或 `<c:dPt>` 样式时绘制数据点标记。
     fn line_series(
         &mut self,
         chart: &SubChart<'_>,
@@ -363,6 +440,13 @@ impl ChartPaint<'_> {
         for (s_idx, series) in chart.series.iter().enumerate() {
             let (color, width) =
                 self.stroke(series.node, self.theme.accent(series.color_index), 1.5);
+            let series_marker_node = series.node.child("marker");
+            let series_symbol = series_marker_node.map_or("", |m| value(m, "symbol"));
+            let series_marker_color = series_marker_node
+                .and_then(|m| m.child("spPr"))
+                .map(|sp| self.theme.fill(sp, color, self.doc))
+                .filter(|c| *c != 0)
+                .unwrap_or(color);
             let mut previous = None;
             for i in 0..series.values.len() {
                 let raw_value = series_value(series, i, blanks);
@@ -405,6 +489,15 @@ impl ChartPaint<'_> {
                         if (0.0..=1.0).contains(&point.0) && (0.0..=1.0).contains(&point.1) {
                             let px = plot.x + point.0 as f32 * plot.width;
                             let py = plot.y + point.1 as f32 * plot.height;
+                            let (sym, pt_color) = self.point_marker_style(
+                                series,
+                                i,
+                                series_symbol,
+                                series_marker_color,
+                            );
+                            if !sym.is_empty() && sym != "none" {
+                                self.draw_marker(px, py, sym, pt_color, 2.5);
+                            }
                             let pct_total = category_abs_total(chart, i, blanks);
                             pending_labels.push((s_idx, i, raw, pct_total, px, py));
                         }
@@ -584,11 +677,12 @@ impl ChartPaint<'_> {
                 (plot.x + zero_frac as f32 * plot.width).clamp(plot.x, plot.x + plot.width);
 
             for (s_idx, series) in chart.series.iter().enumerate() {
-                let fill = self.series_fill(series.node, series.color_index);
+                let series_fill = self.series_fill(series.node, series.color_index);
                 for (i, value) in series.values.iter().enumerate() {
                     let Some(v) = value.or((blanks == "zero").then_some(0.0)) else {
                         continue;
                     };
+                    let fill = self.point_fill(series, i, series_fill);
                     let v_frac = fraction(v, chart.y_range, chart.y_axis);
                     let val_x = plot.x + v_frac as f32 * plot.width;
                     let bar_left = val_x.min(baseline_x).clamp(plot.x, plot.x + plot.width);
@@ -667,13 +761,14 @@ impl ChartPaint<'_> {
                 }
                 let bar_left = plot.x + lo as f32 * plot.width;
                 let bar_w = ((hi - lo) as f32 * plot.width).max(0.5);
+                let fill = self.point_fill(series, i, fills[s_idx]);
                 self.elements.push(Element {
                     kind: ElementType::RECT,
                     x: bar_left,
                     y: bar_y,
                     width: bar_w,
                     height: group_height,
-                    fill: fills[s_idx],
+                    fill,
                     ..Element::default()
                 });
                 pending_labels.push((
@@ -730,11 +825,12 @@ impl ChartPaint<'_> {
                 .clamp(plot.y, plot.y + plot.height);
 
             for (s_idx, series) in chart.series.iter().enumerate() {
-                let fill = self.series_fill(series.node, series.color_index);
+                let series_fill = self.series_fill(series.node, series.color_index);
                 for (i, value) in series.values.iter().enumerate() {
                     let Some(y) = value.or((blanks == "zero").then_some(0.0)) else {
                         continue;
                     };
+                    let fill = self.point_fill(series, i, series_fill);
                     let y_frac = fraction(y, chart.y_range, chart.y_axis);
                     let val_y = plot.y + (1.0 - y_frac) as f32 * plot.height;
                     let bar_top = val_y.min(baseline_y).clamp(plot.y, plot.y + plot.height);
@@ -814,13 +910,14 @@ impl ChartPaint<'_> {
                 }
                 let bar_top = plot.y + (1.0 - hi) as f32 * plot.height;
                 let bar_h = ((hi - lo) as f32 * plot.height).max(0.5);
+                let fill = self.point_fill(series, i, fills[s_idx]);
                 self.elements.push(Element {
                     kind: ElementType::RECT,
                     x: bar_x,
                     y: bar_top,
                     width: group_width,
                     height: bar_h,
-                    fill: fills[s_idx],
+                    fill,
                     ..Element::default()
                 });
                 pending_labels.push((
@@ -921,20 +1018,63 @@ impl ChartPaint<'_> {
         }
     }
 
+    fn find_dpt<'a>(series: &'a chart_data::Series<'a>, index: usize) -> Option<&'a Node> {
+        series
+            .node
+            .named("dPt")
+            .find(|point| value(point, "idx").parse::<usize>().ok() == Some(index))
+    }
+
+    /// 按 `<c:dPt>` 单点显式样式覆写填充色（优先 `<c:spPr>` 填充，其次描边，缺省回落系列色）
+    fn point_fill(&mut self, series: &chart_data::Series<'_>, index: usize, fallback: u32) -> u32 {
+        let Some(point) = Self::find_dpt(series, index) else {
+            return fallback;
+        };
+        let Some(sp_pr) = point.child("spPr") else {
+            return fallback;
+        };
+        let fill = self.theme.fill(sp_pr, 0, self.doc);
+        if fill != 0 {
+            return fill;
+        }
+        if let Some(line) = sp_pr.child("ln") {
+            let stroke = self.theme.fill(line, 0, self.doc);
+            if stroke != 0 {
+                return stroke;
+            }
+        }
+        fallback
+    }
+
+    /// 解析单点的标记符号与颜色（优先 `<c:dPt><c:marker>`，其次 `<c:dPt><c:spPr>`，缺省沿用系列设置）
+    fn point_marker_style<'a>(
+        &mut self,
+        series: &'a chart_data::Series<'a>,
+        index: usize,
+        series_symbol: &'a str,
+        series_color: u32,
+    ) -> (&'a str, u32) {
+        let Some(point) = Self::find_dpt(series, index) else {
+            return (series_symbol, series_color);
+        };
+        let pt_marker = point.child("marker");
+        let sym = pt_marker
+            .map(|m| value(m, "symbol"))
+            .filter(|s| !s.is_empty())
+            .unwrap_or(series_symbol);
+        let marker_fill = pt_marker
+            .and_then(|m| m.child("spPr"))
+            .map(|sp| self.theme.fill(sp, 0, self.doc))
+            .filter(|&c| c != 0);
+        let color = marker_fill.unwrap_or_else(|| self.point_fill(series, index, series_color));
+        (sym, color)
+    }
+
     /// 提取首个系列各数据点的扇区颜色：优先 `<c:dPt>` 显式配色，其次主题强调色。
     fn sector_colors(&mut self, series: &chart_data::Series<'_>) -> Vec<u32> {
-        let mut colors = Vec::with_capacity(series.values.len());
-        for index in 0..series.values.len() {
-            let declared = series.node.named("dPt").find_map(|point| {
-                let idx = value(point, "idx").parse::<usize>().ok()?;
-                (idx == index).then_some(point)?;
-                let sp_pr = point.child("spPr")?;
-                let fill = self.theme.fill(sp_pr, 0, self.doc);
-                (fill != 0).then_some(fill)
-            });
-            colors.push(declared.unwrap_or_else(|| self.theme.accent(index)));
-        }
-        colors
+        (0..series.values.len())
+            .map(|index| self.point_fill(series, index, self.theme.accent(index)))
+            .collect()
     }
 
     /// 绘制数据点标记（散点图与带标记雷达图共用）：支持圆形、方形及关闭标记
@@ -1043,8 +1183,15 @@ impl ChartPaint<'_> {
                     if (0.0..=1.0).contains(&point.0) && (0.0..=1.0).contains(&point.1) {
                         let px = plot.x + point.0 as f32 * plot.width;
                         let py = plot.y + point.1 as f32 * plot.height;
-                        if show_marker {
-                            self.draw_marker(px, py, marker_symbol, marker_color, 3.0);
+                        let (sym, pt_color) =
+                            self.point_marker_style(series, i, marker_symbol, marker_color);
+                        let pt_show = if sym == "none" {
+                            false
+                        } else {
+                            show_marker || !sym.is_empty()
+                        };
+                        if pt_show {
+                            self.draw_marker(px, py, sym, pt_color, 3.0);
                         }
                         if let Some(raw) = raw_y {
                             pending_labels.push((s_idx, i, raw, px, py));
@@ -1279,8 +1426,9 @@ impl ChartPaint<'_> {
                 }
             }
             for &(i, raw, px, py) in &dense {
-                if show_marker {
-                    self.draw_marker(px, py, marker_symbol, line_color, 2.5);
+                let (sym, pt_color) = self.point_marker_style(series, i, marker_symbol, line_color);
+                if sym != "none" && (show_marker || !sym.is_empty()) {
+                    self.draw_marker(px, py, sym, pt_color, 2.5);
                 }
                 pending_labels.push((s_idx, i, raw, px, py));
             }
@@ -1408,7 +1556,7 @@ impl ChartPaint<'_> {
         &mut self,
         chart: &Chart<'_>,
         plot: Plot,
-        total_width: f32,
+        insets: FrameInsets,
         xs: Run,
         ys: Run,
         sec_ys: Option<Run>,
@@ -1422,16 +1570,24 @@ impl ChartPaint<'_> {
             return;
         };
         if matches!(primary.chart_type, ChartType::Bar(_)) {
-            self.axes_bar(chart, primary, plot, xs, ys, x_axis, primary_y);
+            self.axes_bar(chart, primary, plot, insets, xs, ys, x_axis, primary_y);
             return;
         }
-        self.draw_vertical_val_axis(primary_y, ys, plot, total_width, chart.date1904, false);
+        self.draw_vertical_val_axis(primary_y, ys, plot, insets, chart.date1904, false);
         if let (Some(sec_y), Some(sec_style)) = (chart.secondary_y, sec_ys) {
-            self.draw_vertical_val_axis(sec_y, sec_style, plot, total_width, chart.date1904, true);
+            self.draw_vertical_val_axis(sec_y, sec_style, plot, insets, chart.date1904, true);
         }
         if matches!(primary.chart_type, ChartType::Scatter(_)) {
             if let Some(x_step) = chart.primary_x_step {
-                self.draw_scatter_x_axis(x_axis, primary.x_range, x_step, xs, plot, chart.date1904);
+                self.draw_scatter_x_axis(
+                    x_axis,
+                    primary.x_range,
+                    x_step,
+                    xs,
+                    plot,
+                    insets,
+                    chart.date1904,
+                );
                 return;
             }
         }
@@ -1451,6 +1607,8 @@ impl ChartPaint<'_> {
             .iter()
             .any(|s| matches!(s.chart_type, ChartType::Column(_)));
         let mut last_right = f32::NEG_INFINITY;
+        let clamp_max_x = (insets.right_limit.min(plot.x + plot.width + 12.0) - label_width)
+            .max(insets.left_inset);
         if axis_labels(Some(x_axis)) {
             for offset in (0..first.values.len()).step_by(stride) {
                 let i = if reversed(Some(x_axis)) {
@@ -1462,15 +1620,14 @@ impl ChartPaint<'_> {
                 let x = if center_slots && first.dates.is_none() {
                     let slot_width = plot.width / first.values.len().max(1) as f32;
                     let center_x = plot.x + (i as f32 + 0.5) * slot_width;
-                    (center_x - label_width / 2.0)
-                        .clamp(0.0, plot.x + plot.width + 12.0 - label_width)
+                    (center_x - label_width / 2.0).clamp(insets.left_inset, clamp_max_x)
                 } else {
                     let fraction = fraction(value, primary.x_range, Some(x_axis));
                     if !(0.0..=1.0).contains(&fraction) {
                         continue;
                     }
                     (plot.x + fraction as f32 * plot.width - label_width / 2.0)
-                        .clamp(0.0, plot.x + plot.width + 12.0 - label_width)
+                        .clamp(insets.left_inset, clamp_max_x)
                 };
                 if x < last_right {
                     continue;
@@ -1508,6 +1665,7 @@ impl ChartPaint<'_> {
     }
 
     /// 绘制散点图底部数值 X 轴的竖向网格线、刻度文本与底边轴线
+    #[allow(clippy::too_many_arguments)]
     fn draw_scatter_x_axis(
         &mut self,
         x_axis: &Node,
@@ -1515,12 +1673,15 @@ impl ChartPaint<'_> {
         x_step: f64,
         xs: Run,
         plot: Plot,
+        insets: FrameInsets,
         date1904: bool,
     ) {
         let (min, max) = x_range;
         let mut tick = (min / x_step).ceil() * x_step;
         let label_w = (xs.size * 5.0).min(plot.width);
         let mut last_right = f32::NEG_INFINITY;
+        let max_lx =
+            (insets.right_limit.min(plot.x + plot.width + 8.0) - label_w).max(insets.left_inset);
         for _ in 0..101 {
             if tick > max + x_step * 0.000001 {
                 break;
@@ -1531,8 +1692,7 @@ impl ChartPaint<'_> {
                 self.line((x, plot.y), (x, plot.y + plot.height), color, width);
             }
             if axis_labels(Some(x_axis)) {
-                let lx =
-                    (x - label_w / 2.0).clamp(0.0, (plot.x + plot.width + 8.0 - label_w).max(0.0));
+                let lx = (x - label_w / 2.0).clamp(insets.left_inset, max_lx);
                 if lx >= last_right {
                     let text = self.number(tick, x_axis, x_axis.name == "dateAx", date1904);
                     self.label(
@@ -1568,7 +1728,7 @@ impl ChartPaint<'_> {
         val: ValueAxis<'_>,
         style: Run,
         plot: Plot,
-        total_width: f32,
+        insets: FrameInsets,
         date1904: bool,
         is_right: bool,
     ) {
@@ -1590,9 +1750,13 @@ impl ChartPaint<'_> {
                 let text = self.number(tick, axis, false, date1904);
                 let (lx, lw, align) = if is_right {
                     let rx = plot.x + plot.width + 4.0;
-                    (rx, (total_width - rx).max(1.0), 0)
+                    (rx, (insets.right_limit - rx).max(1.0), 0)
                 } else {
-                    (0.0, (plot.x - 4.0).max(1.0), 2)
+                    (
+                        insets.left_inset,
+                        (plot.x - 4.0 - insets.left_inset).max(1.0),
+                        2,
+                    )
                 };
                 self.label(
                     text,
@@ -1626,6 +1790,7 @@ impl ChartPaint<'_> {
         chart: &Chart<'_>,
         primary: &SubChart<'_>,
         plot: Plot,
+        insets: FrameInsets,
         xs: Run,
         ys: Run,
         x_axis: &Node,
@@ -1636,6 +1801,8 @@ impl ChartPaint<'_> {
         let mut tick = (min / primary_y.step).ceil() * primary_y.step;
         let label_w = (ys.size * 5.0).min(plot.width);
         let mut last_right = f32::NEG_INFINITY;
+        let max_lx =
+            (insets.right_limit.min(plot.x + plot.width + 8.0) - label_w).max(insets.left_inset);
         for _ in 0..101 {
             if tick > max + primary_y.step * 0.000001 {
                 break;
@@ -1646,8 +1813,7 @@ impl ChartPaint<'_> {
                 self.line((x, plot.y), (x, plot.y + plot.height), color, width);
             }
             if axis_labels(Some(y_axis)) {
-                let lx =
-                    (x - label_w / 2.0).clamp(0.0, (plot.x + plot.width + 8.0 - label_w).max(0.0));
+                let lx = (x - label_w / 2.0).clamp(insets.left_inset, max_lx);
                 if lx >= last_right {
                     let text = self.number(tick, y_axis, false, chart.date1904);
                     self.label(
@@ -1687,9 +1853,9 @@ impl ChartPaint<'_> {
                     text,
                     xs.clone(),
                     Plot {
-                        x: 0.0,
+                        x: insets.left_inset,
                         y: center_y - label_h * 0.5,
-                        width: (plot.x - 4.0).max(1.0),
+                        width: (plot.x - 4.0 - insets.left_inset).max(1.0),
                         height: label_h,
                     },
                     2,

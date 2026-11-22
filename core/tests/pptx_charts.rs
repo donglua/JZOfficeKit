@@ -1305,6 +1305,216 @@ fn radar_and_scatter_reject_invalid_styles_and_mismatched_xy() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn legend_positions_top_left_and_right_adapt_plot_without_overlap() -> TestResult {
+    let make_chart = |legend_pos: &str| {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart>
+    <c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Title</a:t></a:r></a:p></c:rich></c:tx></c:title>
+    <c:plotArea>
+      <c:barChart><c:barDir val="col"/><c:grouping val="clustered"/>
+        <c:ser><c:idx val="0"/><c:order val="0"/>
+          <c:tx><c:v>Revenue</c:v></c:tx>
+          <c:spPr><a:solidFill><a:srgbClr val="C03050"/></a:solidFill></c:spPr>
+          <c:cat><c:strRef><c:strCache><c:ptCount val="2"/>
+            <c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt>
+          </c:strCache></c:strRef></c:cat>
+          <c:val><c:numRef><c:numCache><c:ptCount val="2"/>
+            <c:pt idx="0"><c:v>30</c:v></c:pt><c:pt idx="1"><c:v>60</c:v></c:pt>
+          </c:numCache></c:numRef></c:val>
+        </c:ser>
+        <c:axId val="100"/><c:axId val="200"/>
+      </c:barChart>
+      <c:catAx><c:axId val="100"/><c:scaling><c:orientation val="minMax"/></c:scaling></c:catAx>
+      <c:valAx><c:axId val="200"/><c:scaling><c:orientation val="minMax"/></c:scaling></c:valAx>
+    </c:plotArea>
+    <c:legend><c:legendPos val="{legend_pos}"/><c:overlay val="0"/></c:legend>
+  </c:chart>
+</c:chartSpace>"#
+        )
+    };
+
+    // 右侧图例：图例文本位于所有柱子右侧
+    let doc_r = document(&make_chart("r"))?;
+    let page_r = &doc_r.pages[0];
+    let max_bar_right_r = page_r
+        .elements
+        .iter()
+        .filter(|el| matches!(el.kind, ElementType::RECT) && el.fill == RED && el.height > 15.0)
+        .map(|el| el.transform[4] + el.width)
+        .fold(f32::MIN, f32::max);
+    let legend_r = page_r
+        .elements
+        .iter()
+        .find(|el| {
+            matches!(el.kind, ElementType::TEXT) && checks::text(&el.paragraphs) == "Revenue"
+        })
+        .ok_or("Missing right legend Revenue")?;
+    assert!(
+        legend_r.transform[4] > max_bar_right_r,
+        "Right legend x={} should be right of bars ({max_bar_right_r})",
+        legend_r.transform[4]
+    );
+
+    // 顶部图例：位于标题下方且高于所有柱子顶部
+    let doc_t = document(&make_chart("t"))?;
+    let page_t = &doc_t.pages[0];
+    let min_bar_top_t = page_t
+        .elements
+        .iter()
+        .filter(|el| matches!(el.kind, ElementType::RECT) && el.fill == RED && el.height > 15.0)
+        .map(|el| el.transform[5])
+        .fold(f32::MAX, f32::min);
+    let title_t = page_t
+        .elements
+        .iter()
+        .find(|el| matches!(el.kind, ElementType::TEXT) && checks::text(&el.paragraphs) == "Title")
+        .ok_or("Missing title")?;
+    let legend_t = page_t
+        .elements
+        .iter()
+        .find(|el| {
+            matches!(el.kind, ElementType::TEXT) && checks::text(&el.paragraphs) == "Revenue"
+        })
+        .ok_or("Missing top legend Revenue")?;
+    assert!(legend_t.transform[5] > title_t.transform[5]);
+    assert!(
+        legend_t.transform[5] + legend_t.height <= min_bar_top_t + 2.0,
+        "Top legend bottom ({}) must stay above plot bars ({min_bar_top_t})",
+        legend_t.transform[5] + legend_t.height
+    );
+
+    // 左侧图例：图例文本位于所有柱子及左纵轴刻度左侧
+    let doc_l = document(&make_chart("l"))?;
+    let page_l = &doc_l.pages[0];
+    let min_bar_left_l = page_l
+        .elements
+        .iter()
+        .filter(|el| matches!(el.kind, ElementType::RECT) && el.fill == RED && el.height > 15.0)
+        .map(|el| el.transform[4])
+        .fold(f32::MAX, f32::min);
+    let legend_l = page_l
+        .elements
+        .iter()
+        .find(|el| {
+            matches!(el.kind, ElementType::TEXT) && checks::text(&el.paragraphs) == "Revenue"
+        })
+        .ok_or("Missing left legend Revenue")?;
+    assert!(
+        legend_l.transform[4] < min_bar_left_l - 20.0,
+        "Left legend x={} should reserve room left of bars ({min_bar_left_l})",
+        legend_l.transform[4]
+    );
+    Ok(())
+}
+
+#[test]
+fn column_bar_and_scatter_honor_dpt_per_point_colors() -> TestResult {
+    let col = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart><c:plotArea>
+    <c:barChart><c:barDir val="col"/><c:grouping val="clustered"/>
+      <c:ser><c:idx val="0"/><c:order val="0"/>
+        <c:spPr><a:solidFill><a:srgbClr val="2070C0"/></a:solidFill></c:spPr>
+        <c:dPt><c:idx val="1"/><c:spPr><a:solidFill><a:srgbClr val="C03050"/></a:solidFill></c:spPr></c:dPt>
+        <c:cat><c:strRef><c:strCache><c:ptCount val="3"/>
+          <c:pt idx="0"><c:v>A</c:v></c:pt><c:pt idx="1"><c:v>B</c:v></c:pt><c:pt idx="2"><c:v>C</c:v></c:pt>
+        </c:strCache></c:strRef></c:cat>
+        <c:val><c:numRef><c:numCache><c:ptCount val="3"/>
+          <c:pt idx="0"><c:v>20</c:v></c:pt><c:pt idx="1"><c:v>40</c:v></c:pt><c:pt idx="2"><c:v>30</c:v></c:pt>
+        </c:numCache></c:numRef></c:val>
+      </c:ser>
+      <c:axId val="100"/><c:axId val="200"/>
+    </c:barChart>
+    <c:catAx><c:axId val="100"/><c:scaling><c:orientation val="minMax"/></c:scaling></c:catAx>
+    <c:valAx><c:axId val="200"/><c:scaling><c:orientation val="minMax"/></c:scaling></c:valAx>
+  </c:plotArea></c:chart>
+</c:chartSpace>"#;
+    let doc_col = document(col)?;
+    let page_col = &doc_col.pages[0];
+    let blue_bars = page_col
+        .elements
+        .iter()
+        .filter(|el| matches!(el.kind, ElementType::RECT) && el.fill == BLUE && el.height > 15.0)
+        .count();
+    let red_bars = page_col
+        .elements
+        .iter()
+        .filter(|el| matches!(el.kind, ElementType::RECT) && el.fill == RED && el.height > 15.0)
+        .count();
+    assert_eq!(blue_bars, 2, "Expected 2 BLUE bars");
+    assert_eq!(red_bars, 1, "Expected 1 RED dPt-overridden bar");
+
+    // 堆积条形图也应按 dPt 逐点覆写配色
+    let stacked_hbar = col
+        .replace(r#"barDir="col""#, r#"barDir="bar""#)
+        .replace(r#"grouping val="clustered""#, r#"grouping val="stacked""#);
+    let doc_hbar = document(&stacked_hbar)?;
+    let page_hbar = &doc_hbar.pages[0];
+    assert_eq!(
+        page_hbar
+            .elements
+            .iter()
+            .filter(|el| matches!(el.kind, ElementType::RECT) && el.fill == RED)
+            .count(),
+        1
+    );
+    assert_eq!(
+        page_hbar
+            .elements
+            .iter()
+            .filter(|el| matches!(el.kind, ElementType::RECT) && el.fill == BLUE)
+            .count(),
+        2
+    );
+
+    // 散点图单个数据点标记支持 dPt 覆写
+    let scatter = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart><c:plotArea>
+    <c:scatterChart><c:scatterStyle val="marker"/>
+      <c:ser><c:idx val="0"/><c:order val="0"/>
+        <c:spPr><a:solidFill><a:srgbClr val="2070C0"/></a:solidFill></c:spPr>
+        <c:dPt><c:idx val="1"/><c:spPr><a:solidFill><a:srgbClr val="C03050"/></a:solidFill></c:spPr></c:dPt>
+        <c:xVal><c:numRef><c:numCache><c:ptCount val="3"/>
+          <c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt><c:pt idx="2"><c:v>3</c:v></c:pt>
+        </c:numCache></c:numRef></c:xVal>
+        <c:yVal><c:numRef><c:numCache><c:ptCount val="3"/>
+          <c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>20</c:v></c:pt><c:pt idx="2"><c:v>15</c:v></c:pt>
+        </c:numCache></c:numRef></c:yVal>
+      </c:ser>
+      <c:axId val="100"/><c:axId val="200"/>
+    </c:scatterChart>
+    <c:valAx><c:axId val="100"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="b"/></c:valAx>
+    <c:valAx><c:axId val="200"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="l"/></c:valAx>
+  </c:plotArea></c:chart>
+</c:chartSpace>"#;
+    let doc_s = document(scatter)?;
+    let page_s = &doc_s.pages[0];
+    assert_eq!(
+        page_s
+            .elements
+            .iter()
+            .filter(|el| matches!(el.kind, ElementType::PATH) && el.fill == RED)
+            .count(),
+        1
+    );
+    assert_eq!(
+        page_s
+            .elements
+            .iter()
+            .filter(|el| matches!(el.kind, ElementType::PATH) && el.fill == BLUE)
+            .count(),
+        2
+    );
+    Ok(())
+}
+
 fn area_chart() -> String {
     fixture::category_chart().replace("lineChart", "areaChart")
 }
