@@ -103,6 +103,108 @@ fn background_gradient_keeps_slide_coordinates_under_rotated_flipped_shape() -> 
     Ok(())
 }
 
+#[test]
+fn alternate_content_falls_back_to_saved_picture_and_shape_in_sp_tree_and_group() -> TestResult {
+    let json = slide(
+        r#"<p:spTree>
+          <mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">
+            <mc:Choice Requires="cx1"><p:graphicFrame><p:xfrm><a:off x="0" y="0"/><a:ext cx="1270000" cy="635000"/></p:xfrm><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/drawing/2014/chartex"/></a:graphic></p:graphicFrame></mc:Choice>
+            <mc:Fallback><p:pic><p:blipFill><a:blip r:embed="rImage"/></p:blipFill><p:spPr><a:xfrm><a:off x="127000" y="254000"/><a:ext cx="762000" cy="381000"/></a:xfrm></p:spPr></p:pic></mc:Fallback>
+          </mc:AlternateContent>
+          <p:grpSp>
+            <p:grpSpPr><a:xfrm><a:off x="127000" y="127000"/><a:ext cx="2540000" cy="1270000"/><a:chOff x="0" y="0"/><a:chExt cx="2540000" cy="1270000"/></a:xfrm></p:grpSpPr>
+            <mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">
+              <mc:Choice Requires="a14"><p:sp><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1270000" cy="635000"/></a:xfrm><a:prstGeom prst="rect"/></p:spPr><p:txBody><a:bodyPr/><a:p><a:r><a:t>Unchosen</a:t></a:r></a:p></p:txBody></p:sp></mc:Choice>
+              <mc:Fallback><p:sp><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1270000" cy="635000"/></a:xfrm><a:prstGeom prst="rect"/><a:solidFill><a:srgbClr val="112233"/></a:solidFill></p:spPr><p:txBody><a:bodyPr/><a:p><a:r><a:t>Fallback shape</a:t></a:r></a:p></p:txBody></p:sp></mc:Fallback>
+            </mc:AlternateContent>
+          </p:grpSp>
+        </p:spTree>"#,
+    )?;
+    let elements = json["pages"][0]["elements"]
+        .as_array()
+        .ok_or("missing elements")?;
+    assert_eq!(
+        elements.len(),
+        3,
+        "Expected fallback image + fallback shape rect + fallback shape text"
+    );
+    assert_eq!(elements[0]["type"], "IMAGE");
+    assert_eq!(elements[1]["type"], "RECT");
+    assert_eq!(elements[2]["type"], "TEXT");
+    let text = elements[2]["paragraphs"][0]["runs"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    assert_eq!(text, "Fallback shape");
+    let warnings = json["warnings"].as_array().ok_or("missing warnings")?;
+    assert!(
+        warnings.iter().any(|w| w
+            .as_str()
+            .is_some_and(|s| s.contains("alternate content uses one saved representation"))),
+        "Expected fallback alternate content warning, got: {warnings:?}"
+    );
+    assert!(
+        !warnings.iter().any(|w| w
+            .as_str()
+            .is_some_and(|s| s.contains("Unsupported PPTX shape content"))),
+        "Should not report unsupported shape omission: {warnings:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn alternate_content_selects_supported_choice_without_warning_and_unwraps_inline_runs() -> TestResult
+{
+    let json = slide(
+        r#"<p:spTree>
+          <mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">
+            <mc:Choice Requires="p">
+              <p:sp>
+                <p:spPr><a:xfrm><a:off x="127000" y="127000"/><a:ext cx="2540000" cy="635000"/></a:xfrm><a:prstGeom prst="rect"/></p:spPr>
+                <p:txBody><a:bodyPr/><a:p>
+                  <a:r><a:t>Value: </a:t></a:r>
+                  <mc:AlternateContent>
+                    <mc:Choice Requires="a14"><a:r><a:t>Skipped</a:t></a:r></mc:Choice>
+                    <mc:Fallback><a:r><a:t>E=mc2</a:t></a:r></mc:Fallback>
+                  </mc:AlternateContent>
+                </a:p></p:txBody>
+              </p:sp>
+            </mc:Choice>
+            <mc:Fallback><p:sp><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1270000" cy="635000"/></a:xfrm><a:prstGeom prst="rect"/></p:spPr><p:txBody><a:bodyPr/><a:p><a:r><a:t>Wrong branch</a:t></a:r></a:p></p:txBody></p:sp></mc:Fallback>
+          </mc:AlternateContent>
+        </p:spTree>"#,
+    )?;
+    let elements = json["pages"][0]["elements"]
+        .as_array()
+        .ok_or("missing elements")?;
+    assert_eq!(elements.len(), 1);
+    let runs = elements[0]["paragraphs"][0]["runs"]
+        .as_array()
+        .ok_or("missing runs")?;
+    let combined: String = runs.iter().filter_map(|r| r["text"].as_str()).collect();
+    assert_eq!(combined, "Value: E=mc2");
+    Ok(())
+}
+
+#[test]
+fn alternate_content_without_supported_branch_or_fallback_warns_omitted() -> TestResult {
+    let json = slide(
+        r#"<p:spTree>
+          <mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">
+            <mc:Choice Requires="cx1"><p:sp><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="1270000" cy="635000"/></a:xfrm><a:prstGeom prst="rect"/></p:spPr></p:sp></mc:Choice>
+          </mc:AlternateContent>
+        </p:spTree>"#,
+    )?;
+    assert_eq!(json["pages"][0]["elements"], serde_json::json!([]));
+    let warnings = json["warnings"].as_array().ok_or("missing warnings")?;
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str() == Some("PPTX alternate content is omitted.")),
+        "Expected omitted alternate content warning, got: {warnings:?}"
+    );
+    Ok(())
+}
+
 fn gradient(angle: &str, scaled: &str) -> String {
     format!(
         r#"<a:gradFill><a:gsLst><a:gs pos="0"><a:srgbClr val="FF0000"/></a:gs><a:gs pos="100000"><a:srgbClr val="0000FF"/></a:gs></a:gsLst><a:lin ang="{angle}" scaled="{scaled}"/></a:gradFill>"#

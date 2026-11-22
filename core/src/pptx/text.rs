@@ -114,25 +114,7 @@ impl Text<'_> {
                 *counter = 0;
             }
             self.budget.text(result.bullet.len())?;
-            for item in &paragraph.children {
-                if !matches!(item.name.as_str(), "r" | "fld" | "br") {
-                    continue;
-                }
-                let mut run = base.clone();
-                if item.name == "br" {
-                    run.text.push('\n');
-                } else {
-                    for segment in item.named("t") {
-                        run.text.push_str(&segment.text);
-                    }
-                    if item.name == "fld" {
-                        styles.doc.warn("PPTX fields use saved text values.");
-                    }
-                }
-                styles.run(&mut run, item.child("rPr"));
-                self.budget.text(run.text.len())?;
-                result.runs.push(run);
-            }
+            collect_runs(paragraph, &base, &mut styles, self.budget, &mut result.runs)?;
             if result.runs.is_empty() {
                 styles.run(&mut base, paragraph.child("endParaRPr"));
                 result.runs.push(base);
@@ -142,6 +124,41 @@ impl Text<'_> {
         apply_autofit(&mut output, body, self.chain);
         Ok(output)
     }
+}
+
+fn collect_runs(
+    parent: &Node,
+    base: &Run,
+    styles: &mut TextStyle<'_>,
+    budget: &mut Budget,
+    runs: &mut Vec<Run>,
+) -> Result<()> {
+    for item in &parent.children {
+        if item.name == "AlternateContent" {
+            if let Some(branch) = super::unsupported::select_alternate(item) {
+                collect_runs(branch.node, base, styles, budget, runs)?;
+            }
+            continue;
+        }
+        if !matches!(item.name.as_str(), "r" | "fld" | "br") {
+            continue;
+        }
+        let mut run = base.clone();
+        if item.name == "br" {
+            run.text.push('\n');
+        } else {
+            for segment in item.named("t") {
+                run.text.push_str(&segment.text);
+            }
+            if item.name == "fld" {
+                styles.doc.warn("PPTX fields use saved text values.");
+            }
+        }
+        styles.run(&mut run, item.child("rPr"));
+        budget.text(run.text.len())?;
+        runs.push(run);
+    }
+    Ok(())
 }
 
 fn paragraph_level(node: &Node) -> usize {

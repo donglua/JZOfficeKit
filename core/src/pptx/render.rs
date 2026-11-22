@@ -104,6 +104,12 @@ impl Render<'_> {
             }
             match shape.name.as_str() {
                 "nvGrpSpPr" | "grpSpPr" | "extLst" => continue,
+                "AlternateContent" => {
+                    if let Some(branch) = super::unsupported::select_alternate(shape) {
+                        self.shapes(branch.node, scope, page)?;
+                    }
+                    continue;
+                }
                 "grpSp" => {
                     self.budget.object()?;
                     if let Some(transform) = scope.transform.group(shape) {
