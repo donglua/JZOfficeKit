@@ -1,6 +1,7 @@
 mod chart;
 mod chart_data;
 pub(crate) mod colors;
+mod diagram;
 pub(crate) mod drawing;
 mod geometry;
 mod gradient;

@@ -22,10 +22,10 @@ pub(super) struct Render<'a> {
 }
 
 #[derive(Clone, Copy)]
-struct ShapeTree<'a> {
-    part: &'a Part,
-    inherited: bool,
-    transform: Transform,
+pub(super) struct ShapeTree<'a> {
+    pub part: &'a Part,
+    pub inherited: bool,
+    pub transform: Transform,
 }
 
 impl Render<'_> {
@@ -88,7 +88,12 @@ impl Render<'_> {
         )
     }
 
-    fn shapes(&mut self, tree: &Node, scope: ShapeTree<'_>, page: &mut Page) -> Result<()> {
+    pub(super) fn shapes(
+        &mut self,
+        tree: &Node,
+        scope: ShapeTree<'_>,
+        page: &mut Page,
+    ) -> Result<()> {
         for shape in &tree.children {
             if scope.inherited && inheritance::placeholder(shape).is_some() {
                 continue;
@@ -134,12 +139,12 @@ impl Render<'_> {
             } else {
                 inheritance::chain(shape, self.layout, self.master)
             };
-            let Some(bounds) = Bounds::parse(&chain) else {
+            let Some(raw_bounds) = Bounds::parse(&chain) else {
                 self.doc
                     .warn("PPTX shapes with missing or invalid absolute bounds were omitted.");
                 continue;
             };
-            let Some((bounds, transform)) = bounds.in_slide_units(scope.transform) else {
+            let Some((bounds, transform)) = raw_bounds.in_slide_units(scope.transform) else {
                 self.doc
                     .warn("PPTX elements with excessive transformed bounds were omitted.");
                 continue;
@@ -151,8 +156,16 @@ impl Render<'_> {
                     }
                 }
                 "graphicFrame" => {
-                    for element in self.graphic(scope.part, shape, bounds)? {
-                        self.emit(page, element, transform)?;
+                    if let Some(rel_ids) = shape
+                        .child("graphic")
+                        .and_then(|n| n.child("graphicData"))
+                        .and_then(|n| n.child("relIds"))
+                    {
+                        self.diagram(scope.part, rel_ids, raw_bounds, scope.transform, page)?;
+                    } else {
+                        for element in self.graphic(scope.part, shape, bounds)? {
+                            self.emit(page, element, transform)?;
+                        }
                     }
                 }
                 _ => {
@@ -183,10 +196,15 @@ impl Render<'_> {
                         self.emit(page, element, transform)?;
                     }
                     if let Some(body) = shape.child("txBody") {
-                        if let Some(mut text) = bounds.text_element(&chain, self.doc) {
+                        let (tx_bounds, tx_transform) = shape
+                            .child("txXfrm")
+                            .and_then(Bounds::from_xfrm)
+                            .and_then(|b| b.in_slide_units(scope.transform))
+                            .unwrap_or((bounds, transform));
+                        if let Some(mut text) = tx_bounds.text_element(&chain, self.doc) {
                             text.paragraphs = self.paragraphs(body, &chain)?;
                             if !text.paragraphs.is_empty() {
-                                self.emit(page, text, transform)?;
+                                self.emit(page, text, tx_transform)?;
                             }
                         } else {
                             self.doc

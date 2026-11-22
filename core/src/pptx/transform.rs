@@ -1,6 +1,9 @@
-use super::{flag, geometry::points};
+use super::{
+    drawing, flag,
+    geometry::{points, Bounds},
+};
 use crate::{
-    model::Element,
+    model::{Element, ElementType},
     xml::{number, Node},
 };
 
@@ -10,6 +13,17 @@ pub(super) struct Transform(pub [f32; 6]);
 
 impl Transform {
     pub const IDENTITY: Self = Self([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+
+    /// 将外层变换与容器框架自身的平移/旋转/翻转合并为子坐标系的仿射矩阵。
+    pub fn frame(self, bounds: Bounds) -> Option<Self> {
+        let mut element = bounds.element(ElementType::RECT);
+        element.transform = self.0;
+        let combined = drawing::element_transform(&element);
+        combined
+            .iter()
+            .all(|v| v.is_finite() && v.abs() <= 100_000.0)
+            .then_some(Self(combined))
+    }
 
     pub fn group(self, group: &Node) -> Option<Self> {
         let node = group.child("grpSpPr")?.child("xfrm")?;

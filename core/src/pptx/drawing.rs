@@ -60,7 +60,7 @@ pub(crate) fn prepare_local(element: &mut Element) {
     }
 }
 
-fn element_transform(element: &Element) -> [f32; 6] {
+pub(super) fn element_transform(element: &Element) -> [f32; 6] {
     let [a, b, c, d, tx, ty] = element.transform;
     let translated = [
         a,

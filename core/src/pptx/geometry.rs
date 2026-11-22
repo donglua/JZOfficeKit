@@ -25,15 +25,21 @@ pub(super) struct Bounds {
 }
 
 impl Bounds {
+    pub fn from_xfrm(transform: &Node) -> Option<Self> {
+        Self::from_xfrms(std::iter::once(transform))
+    }
+
     pub fn parse(chain: &[&Node]) -> Option<Self> {
+        Self::from_xfrms(chain.iter().filter_map(|shape| match shape.name.as_str() {
+            "graphicFrame" => shape.child("xfrm"),
+            _ => shape.child("spPr").and_then(|p| p.child("xfrm")),
+        }))
+    }
+
+    fn from_xfrms<'a>(transforms: impl Iterator<Item = &'a Node>) -> Option<Self> {
         let (mut offset, mut extent, mut rotation) = (None, None, 0.0);
         let (mut flip_h, mut flip_v) = (false, false);
-        for shape in chain {
-            let transform = match shape.name.as_str() {
-                "graphicFrame" => shape.child("xfrm"),
-                _ => shape.child("spPr").and_then(|p| p.child("xfrm")),
-            };
-            let Some(transform) = transform else { continue };
+        for transform in transforms {
             if let Some(off) = transform.child("off") {
                 offset = Some((points(off.attr("x"))?, points(off.attr("y"))?));
             }

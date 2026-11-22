@@ -46,7 +46,6 @@ pub(super) fn warn(node: &Node, doc: &mut Document) {
         return;
     }
     match node.name.as_str() {
-        "relIds" => doc.warn("PPTX SmartArt is omitted."),
         "oMath" | "oMathPara" => doc.warn("PPTX mathematical equations are omitted."),
         "timing" => doc.warn("PPTX animations and timing are not supported."),
         "transition" => doc.warn("PPTX transitions are not supported."),
