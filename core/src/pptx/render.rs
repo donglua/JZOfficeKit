@@ -217,7 +217,7 @@ impl Render<'_> {
         Ok(())
     }
 
-    fn picture(&mut self, part: &Part, shape: &Node, bounds: Bounds) -> Option<Element> {
+    pub(super) fn picture(&mut self, part: &Part, shape: &Node, bounds: Bounds) -> Option<Element> {
         let fill = shape.child("blipFill");
         let blip = fill.and_then(|n| n.child("blip"));
         let path = blip.and_then(|n| part.rels.get(relation_id(n, "embed")));

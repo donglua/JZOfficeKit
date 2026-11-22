@@ -16,6 +16,26 @@ impl Render<'_> {
         if let Some(chart) = data.and_then(|n| n.child("chart")) {
             return self.chart(part, chart, bounds);
         }
+        if let Some(ole) = data.and_then(|n| {
+            n.child("oleObj").or_else(|| {
+                n.named("AlternateContent").find_map(|ac| {
+                    super::unsupported::select_alternate(ac)
+                        .and_then(|branch| branch.node.child("oleObj"))
+                })
+            })
+        }) {
+            if let Some(element) = ole
+                .child("pic")
+                .and_then(|pic| self.picture(part, pic, bounds))
+            {
+                self.doc
+                    .warn("PPTX embedded OLE objects display their saved preview pictures.");
+                return Ok(vec![element]);
+            }
+            self.doc
+                .warn("PPTX multimedia and embedded objects are not supported.");
+            return Ok(Vec::new());
+        }
         let Some(table) = data.and_then(|n| n.child("tbl")) else {
             match data.map_or("", |n| n.attr("uri")) {
                 uri if uri.contains("diagram") => self.doc.warn("PPTX SmartArt is omitted."),

@@ -49,7 +49,7 @@ pub(super) fn warn(node: &Node, doc: &mut Document) {
         "oMath" | "oMathPara" => doc.warn("PPTX mathematical equations are omitted."),
         "timing" => doc.warn("PPTX animations and timing are not supported."),
         "transition" => doc.warn("PPTX transitions are not supported."),
-        "audioFile" | "videoFile" | "media" | "oleObj" => {
+        "audioFile" | "videoFile" | "media" => {
             doc.warn("PPTX multimedia and embedded objects are not supported.")
         }
         "effectLst" | "effectDag" | "scene3d" | "sp3d" => {

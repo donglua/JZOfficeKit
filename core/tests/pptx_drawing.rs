@@ -205,6 +205,106 @@ fn alternate_content_without_supported_branch_or_fallback_warns_omitted() -> Tes
     Ok(())
 }
 
+#[test]
+fn ole_object_renders_fallback_preview_picture_without_unsupported_warning() -> TestResult {
+    let json = slide(
+        r#"<p:spTree>
+          <p:graphicFrame>
+            <p:nvGraphicFramePr><p:cNvPr id="7" name="Object 1"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>
+            <p:xfrm><a:off x="127000" y="254000"/><a:ext cx="762000" cy="381000"/></p:xfrm>
+            <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/presentationml/2006/ole">
+              <mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">
+                <mc:Choice Requires="v">
+                  <p:oleObj spid="_x0000_s1026" name="Worksheet" r:id="rOle"/>
+                </mc:Choice>
+                <mc:Fallback>
+                  <p:oleObj name="Worksheet" r:id="rOle">
+                    <p:embed/>
+                    <p:pic>
+                      <p:nvPicPr><p:cNvPr id="8" name="Preview"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>
+                      <p:blipFill><a:blip r:embed="rImage"/></p:blipFill>
+                      <p:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr>
+                    </p:pic>
+                  </p:oleObj>
+                </mc:Fallback>
+              </mc:AlternateContent>
+            </a:graphicData></a:graphic>
+          </p:graphicFrame>
+        </p:spTree>"#,
+    )?;
+    let elements = json["pages"][0]["elements"]
+        .as_array()
+        .ok_or("missing elements")?;
+    assert_eq!(elements.len(), 1, "Expected 1 OLE preview image");
+    assert_eq!(elements[0]["type"], "IMAGE");
+    assert_eq!(elements[0]["image"], "ppt/media/pixel.png");
+    near_array(&elements[0]["transform"], &[1.0, 0.0, 0.0, 1.0, 10.0, 20.0])?;
+    assert_eq!(elements[0]["width"], 60.0);
+    assert_eq!(elements[0]["height"], 30.0);
+
+    let warnings = json["warnings"].as_array().ok_or("missing warnings")?;
+    assert!(
+        warnings.iter().any(|w| w.as_str()
+            == Some("PPTX embedded OLE objects display their saved preview pictures.")),
+        "Expected OLE preview warning, got: {warnings:?}"
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.as_str() == Some("PPTX multimedia and embedded objects are not supported.")),
+        "Should not emit unsupported OLE warning when preview renders: {warnings:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn direct_ole_object_with_and_without_preview_picture() -> TestResult {
+    let with_pic = slide(
+        r#"<p:spTree>
+          <p:graphicFrame>
+            <p:xfrm><a:off x="254000" y="127000"/><a:ext cx="635000" cy="635000"/></p:xfrm>
+            <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/presentationml/2006/ole">
+              <p:oleObj name="Equation">
+                <p:embed/>
+                <p:pic>
+                  <p:blipFill><a:blip r:embed="rImage"/></p:blipFill>
+                  <p:spPr/>
+                </p:pic>
+              </p:oleObj>
+            </a:graphicData></a:graphic>
+          </p:graphicFrame>
+        </p:spTree>"#,
+    )?;
+    let elements = with_pic["pages"][0]["elements"]
+        .as_array()
+        .ok_or("missing elements")?;
+    assert_eq!(elements.len(), 1);
+    assert_eq!(elements[0]["type"], "IMAGE");
+    near_array(&elements[0]["transform"], &[1.0, 0.0, 0.0, 1.0, 20.0, 10.0])?;
+
+    let without_pic = slide(
+        r#"<p:spTree>
+          <p:graphicFrame>
+            <p:xfrm><a:off x="0" y="0"/><a:ext cx="635000" cy="635000"/></p:xfrm>
+            <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/presentationml/2006/ole">
+              <p:oleObj name="Equation"><p:embed/></p:oleObj>
+            </a:graphicData></a:graphic>
+          </p:graphicFrame>
+        </p:spTree>"#,
+    )?;
+    assert_eq!(without_pic["pages"][0]["elements"], serde_json::json!([]));
+    let warnings = without_pic["warnings"]
+        .as_array()
+        .ok_or("missing warnings")?;
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str() == Some("PPTX multimedia and embedded objects are not supported.")),
+        "Expected unsupported warning when preview pic is absent: {warnings:?}"
+    );
+    Ok(())
+}
+
 fn gradient(angle: &str, scaled: &str) -> String {
     format!(
         r#"<a:gradFill><a:gsLst><a:gs pos="0"><a:srgbClr val="FF0000"/></a:gs><a:gs pos="100000"><a:srgbClr val="0000FF"/></a:gs></a:gsLst><a:lin ang="{angle}" scaled="{scaled}"/></a:gradFill>"#
