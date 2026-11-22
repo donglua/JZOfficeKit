@@ -786,6 +786,116 @@ xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
     Ok(())
 }
 
+#[test]
+fn pie_chart_data_labels_render_category_and_percent_and_honor_point_delete() -> TestResult {
+    let pie = r#"<?xml version="1.0" encoding="UTF-8"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+<c:chart><c:plotArea><c:layout/>
+<c:pie3DChart><c:ser><c:idx val="0"/><c:order val="0"/>
+<c:dLbls>
+  <c:dLbl><c:idx val="0"/><c:showVal val="1"/></c:dLbl>
+  <c:dLbl><c:idx val="2"/><c:delete val="1"/></c:dLbl>
+  <c:showVal val="0"/><c:showCatName val="1"/><c:showPercent val="1"/><c:separator> </c:separator>
+</c:dLbls>
+<c:cat><c:strLit><c:ptCount val="3"/>
+<c:pt idx="0"><c:v>Alpha</c:v></c:pt><c:pt idx="1"><c:v>Beta</c:v></c:pt><c:pt idx="2"><c:v>Gamma</c:v></c:pt>
+</c:strLit></c:cat>
+<c:val><c:numLit><c:ptCount val="3"/>
+<c:pt idx="0"><c:v>30</c:v></c:pt><c:pt idx="1"><c:v>50</c:v></c:pt><c:pt idx="2"><c:v>20</c:v></c:pt>
+</c:numLit></c:val>
+</c:ser></c:pie3DChart></c:plotArea></c:chart></c:chartSpace>"#;
+
+    let doc = document(pie)?;
+    let labels = texts(&doc.pages[0]);
+    assert!(
+        labels.iter().any(|t| t == "Alpha 30 30%"),
+        "Expected point 0 override label 'Alpha 30 30%', got: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|t| t == "Beta 50%"),
+        "Expected point 1 label 'Beta 50%', got: {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|t| t.contains("Gamma")),
+        "Deleted point 2 label 'Gamma' should be omitted: {labels:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn column_and_bar_data_labels_honor_series_delete_and_stacked_values() -> TestResult {
+    let col = fixture::category_chart()
+        .replace(
+            "<c:lineChart><c:grouping val=\"standard\"/>",
+            "<c:barChart><c:barDir val=\"col\"/><c:grouping val=\"clustered\"/>",
+        )
+        .replace(
+            "<c:axId val=\"100\"/><c:axId val=\"200\"/></c:lineChart>",
+            "<c:dLbls><c:showVal val=\"1\"/></c:dLbls><c:axId val=\"100\"/><c:axId val=\"200\"/></c:barChart>",
+        )
+        // 仅给第 2 个系列（Beta）关闭数据标签
+        .replace(
+            "<c:tx><c:v>Beta</c:v></c:tx>",
+            "<c:tx><c:v>Beta</c:v></c:tx><c:dLbls><c:delete val=\"1\"/></c:dLbls>",
+        );
+    let doc_col = document(&col)?;
+    let labels_col = texts(&doc_col.pages[0]);
+    for val in ["10", "25", "15", "30"] {
+        assert!(
+            labels_col.iter().any(|t| t == val),
+            "Missing Alpha column data label {val}: {labels_col:?}"
+        );
+    }
+    // 20 仅来自 Y 轴刻度（1 次），被 delete=1 关闭的 Beta 系列不应再输出 20
+    assert_eq!(
+        labels_col.iter().filter(|t| *t == "20").count(),
+        1,
+        "Deleted Beta label '20' should not render: {labels_col:?}"
+    );
+
+    // 横向堆积条形图也应正确渲染数据标签
+    let bar = col.replace(
+        "<c:barDir val=\"col\"/><c:grouping val=\"clustered\"/>",
+        "<c:barDir val=\"bar\"/><c:grouping val=\"stacked\"/>",
+    );
+    let doc_bar = document(&bar)?;
+    let labels_bar = texts(&doc_bar.pages[0]);
+    for val in ["10", "25", "15", "30"] {
+        assert!(
+            labels_bar.iter().any(|t| t == val),
+            "Missing Alpha stacked bar data label {val}: {labels_bar:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn line_chart_data_labels_render_inside_frame() -> TestResult {
+    let line = fixture::category_chart().replace(
+        "<c:axId val=\"100\"/><c:axId val=\"200\"/></c:lineChart>",
+        "<c:dLbls><c:showVal val=\"1\"/></c:dLbls><c:axId val=\"100\"/><c:axId val=\"200\"/></c:lineChart>",
+    );
+    let doc = document(&line)?;
+    let page = &doc.pages[0];
+    let labels = texts(page);
+    for val in ["10", "25", "15", "30", "20"] {
+        assert!(
+            labels.iter().any(|t| t == val),
+            "Missing line data label {val}: {labels:?}"
+        );
+    }
+    for el in page.elements.iter().filter(|e| {
+        matches!(e.kind, ElementType::TEXT)
+            && ["10", "25", "15", "30", "20"].contains(&checks::text(&e.paragraphs).as_str())
+            && e.transform[4] > FRAME[0] + 35.0
+    }) {
+        assert!(el.transform[4] >= FRAME[0] - 1.0);
+        assert!(el.transform[4] + el.width <= FRAME[0] + FRAME[2] + 1.0);
+    }
+    Ok(())
+}
+
 fn area_chart() -> String {
     fixture::category_chart().replace("lineChart", "areaChart")
 }

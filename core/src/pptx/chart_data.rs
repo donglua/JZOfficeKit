@@ -32,6 +32,8 @@ pub(super) enum ChartType {
 pub(super) struct Chart<'a> {
     pub node: &'a Node,
     pub plot: &'a Node,
+    /// 具体图表类型节点（如 `lineChart`、`barChart`、`pie3DChart`），用于解析 `<c:dLbls>` 等图表级配置。
+    pub chart_node: &'a Node,
     /// 分类轴；饼图与环形图没有坐标轴，此时为 `None`。
     pub x_axis: Option<&'a Node>,
     /// 数值轴；饼图与环形图没有坐标轴，此时为 `None`。
@@ -444,6 +446,7 @@ impl<'a> Chart<'a> {
         Some(Self {
             node,
             plot,
+            chart_node,
             x_axis,
             y_axis,
             series,
