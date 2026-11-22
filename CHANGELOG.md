@@ -1,5 +1,38 @@
 # 更新日志
 
+## 0.17.0
+
+发布页面：[v0.17.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.17.0)。
+
+本版本新增 DOCX 脚注与尾注静态连续流预览、PPTX 表格合并单元格与标准面积图支持、XLSX 单元格缩进与自动缩字全端支持，并修复 DOCX 混排脚本拆分、`mc:AlternateContent` 分支选择、旧版文本框/VML 图片提取与常见 Office 字体回退映射，`schemaVersion` 保持 **9** 不变。
+
+### 排版与特性
+
+- **XLSX 单元格缩进与自动缩字（`core` / Android / HarmonyOS NEXT / macOS）**：
+  - **核心解析（`core`）**：`CellStyle` 新增可选字段 `indent`（上限 250，超限返回 `Error::Limit`）与 `shrinkToFit`（`schemaVersion` 保持 9，值为 0 / false 时不参与序列化，旧文档 JSON 结构不变），并收敛相关未支持提示。
+  - **三端渲染**：Android（`viewer`）、HarmonyOS NEXT（`viewer-ohos`）与 macOS（`viewer-macos`）同步实现基于字符宽度的左右对齐缩进偏移（居中对齐忽略缩进）以及未启用自动换行时的单行自适应缩字（字号下限 `1.0`）。
+- **DOCX 脚注与尾注（`core`）**：
+  - 新增 `core/src/docx/notes.rs` 解析 `footnotes` 与 `endnotes` 部件（过滤 `separator` 等非 `normal` 类型及无 ID 项，校验重复 ID 并在缺失目标时告警）；正文首次引用时分配连续十进制显示编号。
+  - 在正文之后按静态连续流追加被引用的脚注与尾注，首条注释上方附加分隔顶线与间距，并保留各自部件的关系上下文以正确解析注释内嵌图片（不按页底定位，也不提供引用跳转）。
+- **PPTX 表格合并单元格（`core`）**：
+  - 解析单元格 `gridSpan`、`rowSpan` 与 `hMerge` / `vMerge` 合并标记，生成 `Element.merges`（`CellRange` 列表）并清空被覆盖单元格内容与填充，同时校验越界合并跨度与重叠合并起点。
+- **PPTX 标准面积图（`core`）**：
+  - 支持 `areaChart`（`grouping` 为空或 `standard`），沿零基线闭合填充区域并拆分正负跨零区段，按 `blanks` 策略处理空值（`zero` / `span` / 断开），并绘制系列折线描边与图例；堆叠面积图保持拦截并提示。
+
+### 测试
+
+- 新增 `core/tests/docx_notes.rs`（3 项用例）校验脚注/尾注引用顺序、连续编号、缺失目标容错与注释内图片关系解析。
+- 扩展 `core/tests/pptx_tables.rs`（新增 4 项用例）与 `core/tests/pptx_charts.rs`（新增 4 项用例），覆盖 PPTX 表格合并范围与异常拦截，以及标准面积图正负区域拆分、空值策略与堆叠面积图拦截。
+- 扩展 `core/tests/xlsx_styles.rs`（新增 2 项用例）、`scripts/tests/DocumentDecoderChecks.java`（155 → **162** 项断言）、`scripts/tests/SheetTextStyleChecks.ts`（12 项断言）与 macOS `JZOfficeTests.swift`，校验 XLSX `indent` / `shrinkToFit` 解析、解码与缩放行为。
+- 扩展 `core/tests/docx_fonts.rs`、`core/tests/docx_textbox.rs` 与 `DocxFontChecks.java`，覆盖混排脚本拆分、`mc:AlternateContent` 分支选择与 VML 图片提取。
+
+### 细节修复与交互优化
+
+- **DOCX 混排脚本字体拆分（`core`）**：按字符脚本归属（ASCII / hAnsi / 东亚 / 复杂脚本）将混排文本拆分为连续 `Run`，分别保留对应显式字体族，仅在所需脚本槽位未定义时回退默认字体并提示。
+- **DOCX `mc:AlternateContent` 与旧版 VML 图片/文本框（`core`）**：按 OOXML Markup Compatibility 规则择优选择受支持的 `mc:Choice` 分支并仅检查所选分支；支持从 `w:pict` / `w:object` 提取简单 `v:imagedata` 图片并收敛旧版文本框告警范围。
+- **常见 Office 字体族回退映射（`viewer` / `viewer-macos`）**：扩展 Android 与 macOS 端对宋体/仿宋/黑体/楷体/隶书/等线/微软雅黑/幼圆、思源黑体/宋体及常见西文/等宽字体族的系统字体回退。
+- **文档更新**：同步更新 `README.md` 与 `README.en.md` 的预览特性覆盖说明。
+
 ## 0.16.0
 
 发布页面：[v0.16.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.16.0)。

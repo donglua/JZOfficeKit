@@ -1,5 +1,27 @@
 # 更新日志
 
+## 0.17.0
+
+发布页面：[v0.17.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.17.0)。
+
+本版本新增 XLSX 单元格缩进与自动缩字支持、DOCX 脚注与尾注静态连续流预览、PPTX 表格合并单元格与标准面积图支持，并修复 DOCX 混排脚本字体拆分、`mc:AlternateContent` 分支选择与旧版 VML 图片提取，`schemaVersion` 保持 **9** 不变。
+
+### 排版与特性
+
+- **XLSX 单元格缩进与自动缩字（`core` / `viewer-ohos`）**：
+  - `core` 新增 `CellStyle.indent`（上限 250）与 `shrinkToFit` 字段并收敛相关告警（`schemaVersion` 保持 9）。
+  - 鸿蒙端新增 `SheetTextStyle.ts` 并在 `SpreadsheetView.ets` 接入左右对齐缩进偏移（居中对齐忽略缩进）与未启用自动换行时的单行自适应缩字（字号下限 `1.0`）。
+- **DOCX 脚注与尾注（`core`）**：
+  - 支持解析 `footnotes` 与 `endnotes` 部件并在正文之后按静态连续流追加，首次引用分配连续十进制显示编号，并保留各自部件的图片关系上下文。
+- **PPTX 表格合并单元格与标准面积图（`core`）**：
+  - 解析 PPTX 表格 `gridSpan`、`rowSpan` 与 `hMerge` / `vMerge`，生成 `Element.merges` 并校验越界/重叠合并。
+  - 新增标准面积图（`areaChart`）支持，沿零基线闭合填充区域并拆分正负跨零区段。
+
+### 细节修复与测试
+
+- **DOCX 解析修复（`core`）**：按字符脚本归属拆分混排文本 `Run` 以保留各自显式字体族；择优选择受支持的 `mc:Choice` 分支并仅检查所选分支；支持提取 `w:pict` / `w:object` 中的简单 `v:imagedata` 图片并收敛旧版文本框告警范围。
+- **测试**：新增 `scripts/tests/SheetTextStyleChecks.ts`（12 项断言）校验鸿蒙端 XLSX 单元格缩进宽度与自动缩字字号计算。
+
 ## 0.16.0
 
 发布页面：[v0.16.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.16.0)。
