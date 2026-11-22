@@ -4,6 +4,7 @@ use std::collections::HashMap;
 pub(super) struct Series<'a> {
     pub node: &'a Node,
     pub values: Vec<Option<f64>>,
+    pub x_values: Option<Vec<Option<f64>>>,
     pub categories: Vec<Option<&'a str>>,
     pub dates: Option<Vec<Option<f64>>>,
     pub name: String,
@@ -41,6 +42,33 @@ pub(super) enum Grouping {
     PercentStacked,
 }
 
+/// 散点图样式（`<c:scatterStyle val="...">`）。
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum ScatterStyle {
+    Line,
+    LineMarker,
+    Marker,
+    None,
+}
+
+impl ScatterStyle {
+    pub fn has_line(self) -> bool {
+        matches!(self, Self::Line | Self::LineMarker)
+    }
+
+    pub fn has_marker(self) -> bool {
+        matches!(self, Self::LineMarker | Self::Marker)
+    }
+}
+
+/// 雷达图样式（`<c:radarStyle val="...">`）。
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum RadarStyle {
+    Standard,
+    Marker,
+    Filled,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum ChartType {
     Line(Grouping),
@@ -48,6 +76,10 @@ pub(super) enum ChartType {
     Column(Grouping),
     /// 横向条形图（`barChart` / `bar3DChart` 且 `barDir="bar"`）
     Bar(Grouping),
+    /// XY 散点图
+    Scatter(ScatterStyle),
+    /// 雷达图
+    Radar(RadarStyle),
     /// 饼图（`hole_ratio == 0.0`）与环形图（`hole_ratio > 0.0`）
     Pie {
         hole_ratio: f32,
@@ -59,6 +91,7 @@ pub(super) struct Chart<'a> {
     pub plot: &'a Node,
     pub sub_charts: Vec<SubChart<'a>>,
     pub primary_x_axis: Option<&'a Node>,
+    pub primary_x_step: Option<f64>,
     pub primary_y: Option<ValueAxis<'a>>,
     pub secondary_y: Option<ValueAxis<'a>>,
     pub blanks: &'a str,
@@ -151,9 +184,12 @@ impl<'a> Chart<'a> {
         }
         let is_combo = chart_nodes.len() > 1;
         if is_combo
-            && parsed_types
-                .iter()
-                .any(|(_, (ct, _))| matches!(ct, ChartType::Pie { .. } | ChartType::Bar(_)))
+            && parsed_types.iter().any(|(_, (ct, _))| {
+                !matches!(
+                    ct,
+                    ChartType::Line(_) | ChartType::Area(_) | ChartType::Column(_)
+                )
+            })
         {
             return None;
         }
@@ -196,11 +232,17 @@ impl<'a> Chart<'a> {
             let (x_axis, y_axis) = if no_axes && axes.is_empty() {
                 (None, None)
             } else {
-                let (x_ax, y_ax) = resolve_sub_axes(chart_node, &axis_by_id, &mut used_axis_ids)?;
+                let (x_ax, y_ax) =
+                    resolve_sub_axes(chart_node, chart_type, &axis_by_id, &mut used_axis_ids)?;
                 (Some(x_ax), Some(y_ax))
             };
-            let series =
-                parse_sub_series(chart_node, x_axis, &mut total_series, &mut total_points)?;
+            let series = parse_sub_series(
+                chart_node,
+                chart_type,
+                x_axis,
+                &mut total_series,
+                &mut total_points,
+            )?;
             let mut xs = Vec::new();
             for s in &series {
                 for i in 0..s.values.len() {
@@ -275,15 +317,65 @@ fn parse_chart_kind(chart_node: &Node) -> Option<(ChartType, bool)> {
             },
             false,
         )),
+        "scatterChart" => {
+            let style = match value(chart_node, "scatterStyle") {
+                "" | "lineMarker" | "smoothMarker" => ScatterStyle::LineMarker,
+                "line" | "smooth" => ScatterStyle::Line,
+                "marker" => ScatterStyle::Marker,
+                "none" => ScatterStyle::None,
+                _ => return None,
+            };
+            Some((ChartType::Scatter(style), false))
+        }
+        "radarChart" => {
+            let style_node = chart_node.child("radarStyle")?;
+            let style = match style_node.attr("val") {
+                "" | "standard" => RadarStyle::Standard,
+                "marker" => RadarStyle::Marker,
+                "filled" => RadarStyle::Filled,
+                _ => return None,
+            };
+            Some((ChartType::Radar(style), false))
+        }
         _ => None,
     }
 }
 
 fn resolve_sub_axes<'a>(
     chart_node: &Node,
+    chart_type: ChartType,
     axis_by_id: &HashMap<&'a str, &'a Node>,
     used_axis_ids: &mut Vec<&'a str>,
 ) -> Option<(&'a Node, &'a Node)> {
+    if matches!(chart_type, ChartType::Scatter(_)) {
+        let mut matched = Vec::new();
+        for id_node in chart_node.named("axId") {
+            let id = id_node.attr("val");
+            let Some(&axis) = axis_by_id.get(id) else {
+                continue;
+            };
+            if !matches!(axis.name.as_str(), "valAx" | "dateAx") {
+                return None;
+            }
+            let canonical_id = value(axis, "axId");
+            if !used_axis_ids.contains(&canonical_id) {
+                used_axis_ids.push(canonical_id);
+            }
+            matched.push(axis);
+        }
+        if matched.len() != 2 {
+            return None;
+        }
+        let (a, b) = (matched[0], matched[1]);
+        let pos_a = value(a, "axPos");
+        let pos_b = value(b, "axPos");
+        return if matches!(pos_a, "l" | "r") && matches!(pos_b, "b" | "t") {
+            Some((b, a))
+        } else {
+            Some((a, b))
+        };
+    }
+
     let mut x_axis = None;
     let mut y_axis = None;
     for id_node in chart_node.named("axId") {
@@ -315,57 +407,82 @@ fn resolve_sub_axes<'a>(
     Some((x_axis?, y_axis?))
 }
 
+fn parse_numeric_cache(parent: &Node) -> Option<Vec<Option<f64>>> {
+    let raw_values = cache(parent)?;
+    let mut values = Vec::with_capacity(raw_values.len());
+    for raw in raw_values {
+        values.push(match raw {
+            None | Some("" | "#N/A") => None,
+            Some(raw) => Some(numeric(raw)?),
+        });
+    }
+    Some(values)
+}
+
 fn parse_sub_series<'a>(
     chart_node: &'a Node,
+    chart_type: ChartType,
     x_axis: Option<&'a Node>,
     total_series: &mut usize,
     total_points: &mut usize,
 ) -> Option<Vec<Series<'a>>> {
     let mut series = Vec::new();
+    let is_scatter = matches!(chart_type, ChartType::Scatter(_));
     for source in chart_node.named("ser") {
         if *total_series + series.len() >= 8 {
             return None;
         }
-        let raw_values = cache(source.child("val")?)?;
-        *total_points += raw_values.len();
-        if *total_points > 4096 {
-            return None;
-        }
-        let mut values = Vec::with_capacity(raw_values.len());
-        for raw in raw_values {
-            values.push(match raw {
-                None | Some("" | "#N/A") => None,
-                Some(raw) => Some(numeric(raw)?),
-            });
-        }
-        if !values.iter().any(Option::is_some) {
-            return None;
-        }
-        let categories = match source.child("cat") {
-            Some(cat) => cache(cat)?,
-            None => (0..values.len()).map(|_| None).collect(),
-        };
-        if categories.len() != values.len() {
-            return None;
-        }
-        let dates = if x_axis.is_some_and(|n| n.name == "dateAx") {
-            Some(
-                categories
+        let (values, x_values, categories, dates) = if is_scatter {
+            let x_vals = parse_numeric_cache(source.child("xVal")?)?;
+            let y_vals = parse_numeric_cache(source.child("yVal")?)?;
+            if x_vals.len() != y_vals.len()
+                || !x_vals
                     .iter()
-                    .zip(&values)
-                    .map(|(raw, y)| match raw {
-                        Some(raw) => numeric(raw).map(Some),
-                        None if y.is_none() => Some(None),
-                        None => None,
-                    })
-                    .collect::<Option<Vec<_>>>()?,
-            )
+                    .zip(&y_vals)
+                    .any(|(x, y)| x.is_some() && y.is_some())
+            {
+                return None;
+            }
+            *total_points += y_vals.len();
+            if *total_points > 4096 {
+                return None;
+            }
+            let cats = vec![None; y_vals.len()];
+            (y_vals, Some(x_vals), cats, None)
         } else {
-            None
+            let values = parse_numeric_cache(source.child("val")?)?;
+            *total_points += values.len();
+            if *total_points > 4096 || !values.iter().any(Option::is_some) {
+                return None;
+            }
+            let categories = match source.child("cat") {
+                Some(cat) => cache(cat)?,
+                None => (0..values.len()).map(|_| None).collect(),
+            };
+            if categories.len() != values.len() {
+                return None;
+            }
+            let dates = if x_axis.is_some_and(|n| n.name == "dateAx") {
+                Some(
+                    categories
+                        .iter()
+                        .zip(&values)
+                        .map(|(raw, y)| match raw {
+                            Some(raw) => numeric(raw).map(Some),
+                            None if y.is_none() => Some(None),
+                            None => None,
+                        })
+                        .collect::<Option<Vec<_>>>()?,
+                )
+            } else {
+                None
+            };
+            (values, None, categories, dates)
         };
         series.push(Series {
             node: source,
             values,
+            x_values,
             categories,
             dates,
             name: source.child("tx").map(text).unwrap_or_default(),
@@ -541,8 +658,10 @@ fn collect_y_values(
                     }
                 }
             }
-            if matches!(chart_type, ChartType::Column(_) | ChartType::Bar(_))
-                && !ys.is_empty()
+            if matches!(
+                chart_type,
+                ChartType::Column(_) | ChartType::Bar(_) | ChartType::Radar(_)
+            ) && !ys.is_empty()
                 && ys.iter().all(|&y| y >= 0.0)
             {
                 ys.push(0.0);
@@ -595,13 +714,14 @@ fn build_chart<'a>(
         return None;
     }
 
-    let mut x_ranges: HashMap<&'a str, (f64, f64)> = HashMap::new();
+    let mut x_ranges: HashMap<&'a str, ((f64, f64), f64)> = HashMap::new();
     let mut y_ranges: HashMap<&'a str, ValueAxis<'a>> = HashMap::new();
     for sub in &raw_subs {
         if let Some(ax) = sub.x_axis {
             let id = value(ax, "axId");
             if !x_ranges.contains_key(id) {
-                let (mut xr, _) = range(x_pool.get(id)?, ax, false)?;
+                let is_scatter = matches!(sub.chart_type, ChartType::Scatter(_));
+                let (mut xr, x_step) = range(x_pool.get(id)?, ax, is_scatter)?;
                 let has_explicit = ax
                     .child("scaling")
                     .is_some_and(|s| s.child("min").is_some() || s.child("max").is_some());
@@ -612,7 +732,7 @@ fn build_chart<'a>(
                         xr = (-0.5, count as f64 - 0.5);
                     }
                 }
-                x_ranges.insert(id, xr);
+                x_ranges.insert(id, (xr, x_step));
             }
         }
         if let Some(ax) = sub.y_axis {
@@ -632,6 +752,8 @@ fn build_chart<'a>(
     }
 
     let primary_x_axis = raw_subs.first().and_then(|s| s.x_axis);
+    let primary_x_step =
+        primary_x_axis.and_then(|ax| x_ranges.get(value(ax, "axId")).map(|(_, step)| *step));
     let primary_y = y_order.first().and_then(|id| y_ranges.get(id).copied());
     let secondary_y = y_order.get(1).and_then(|id| y_ranges.get(id).copied());
 
@@ -640,7 +762,7 @@ fn build_chart<'a>(
         .map(|sub| {
             let x_range = sub
                 .x_axis
-                .and_then(|ax| x_ranges.get(value(ax, "axId")).copied())
+                .and_then(|ax| x_ranges.get(value(ax, "axId")).map(|(r, _)| *r))
                 .unwrap_or((0.0, 1.0));
             let y_range = sub
                 .y_axis
@@ -663,6 +785,7 @@ fn build_chart<'a>(
         plot,
         sub_charts,
         primary_x_axis,
+        primary_x_step,
         primary_y,
         secondary_y,
         blanks,
@@ -684,6 +807,9 @@ fn hole_ratio(chart_node: &Node) -> f32 {
 
 impl Series<'_> {
     pub fn x(&self, index: usize) -> Option<f64> {
+        if let Some(xs) = &self.x_values {
+            return xs.get(index).copied().flatten();
+        }
         self.dates
             .as_ref()
             .map_or(Some(index as f64), |dates| dates[index])

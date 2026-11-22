@@ -4,7 +4,10 @@ use crate::model::{Document, Element, ElementType, Kind, Paragraph, Path, PathCo
 use crate::pptx::{colors::Theme, flag, geometry::points, text_style::TextStyle};
 use crate::xml::Node;
 use crate::Result;
-use data::{self as chart_data, value, Chart, ChartType, Grouping, SubChart, ValueAxis};
+use data::{
+    self as chart_data, value, Chart, ChartType, Grouping, RadarStyle, ScatterStyle, SubChart,
+    ValueAxis,
+};
 
 fn prefix(doc: &Document) -> &'static str {
     match doc.kind {
@@ -63,6 +66,12 @@ pub(crate) fn render(
             ChartType::Bar(_) => painter.doc.warn(&format!(
                 "{tag} horizontal bar charts use cached values; layout, bars and styling are simplified."
             )),
+            ChartType::Scatter(_) => painter.doc.warn(&format!(
+                "{tag} scatter charts use cached values; layout, markers and styling are simplified."
+            )),
+            ChartType::Radar(_) => painter.doc.warn(&format!(
+                "{tag} radar charts use cached values; layout, markers and styling are simplified."
+            )),
             ChartType::Pie { .. } => painter.doc.warn(&format!(
                 "{tag} pie and doughnut charts use cached values; sectors and styling are simplified."
             )),
@@ -116,6 +125,8 @@ impl ChartPaint<'_> {
             .unwrap_or(base.clone());
         let is_pie =
             chart.sub_charts.len() == 1 && matches!(primary.chart_type, ChartType::Pie { .. });
+        let is_radar =
+            chart.sub_charts.len() == 1 && matches!(primary.chart_type, ChartType::Radar(_));
         let pie_entries: Vec<(usize, String)> = if is_pie {
             let first = &primary.series[0];
             first
@@ -148,7 +159,7 @@ impl ChartPaint<'_> {
             0
         };
         let legend_height = legend_rows as f32 * legend_style.size * 1.7;
-        let (left_margin, right_margin, bottom_margin) = if is_pie {
+        let (left_margin, right_margin, bottom_margin) = if is_pie || is_radar {
             (8.0, 8.0, 8.0)
         } else if matches!(primary.chart_type, ChartType::Bar(_)) {
             (
@@ -202,7 +213,9 @@ impl ChartPaint<'_> {
                 1,
             );
         }
-        self.axes(chart, plot, width, xs, ys, sec_ys);
+        if !is_radar {
+            self.axes(chart, plot, width, xs.clone(), ys.clone(), sec_ys);
+        }
         for sub in &chart.sub_charts {
             match sub.chart_type {
                 ChartType::Line(grouping) => {
@@ -226,6 +239,22 @@ impl ChartPaint<'_> {
                 }
                 ChartType::Bar(grouping) => {
                     self.bar_series(sub, plot, grouping, chart.blanks, chart.date1904, &base);
+                }
+                ChartType::Scatter(style) => {
+                    self.scatter_series(sub, plot, style, chart.blanks, chart.date1904, &base);
+                }
+                ChartType::Radar(style) => {
+                    self.radar(
+                        sub,
+                        plot,
+                        style,
+                        chart.primary_y,
+                        chart.blanks,
+                        chart.date1904,
+                        &xs,
+                        &ys,
+                        &base,
+                    );
                 }
                 ChartType::Pie { hole_ratio } => {
                     self.pie(sub, plot, hole_ratio, chart.date1904, &base);
@@ -276,7 +305,9 @@ impl ChartPaint<'_> {
                 let (color, line_w) = self.stroke(series.node, self.theme.accent(index), 1.5);
                 let y = height - legend_height + row as f32 * legend_style.size * 1.7;
                 match sub_type {
-                    ChartType::Line(_) => {
+                    ChartType::Line(_)
+                    | ChartType::Scatter(_)
+                    | ChartType::Radar(RadarStyle::Standard | RadarStyle::Marker) => {
                         self.line(
                             (plot.x, y + legend_style.size * 0.6),
                             (plot.x + 14.0, y + legend_style.size * 0.6),
@@ -288,6 +319,7 @@ impl ChartPaint<'_> {
                     ChartType::Area(_)
                     | ChartType::Column(_)
                     | ChartType::Bar(_)
+                    | ChartType::Radar(RadarStyle::Filled)
                     | ChartType::Pie { .. } => {
                         let fill = self.series_fill(series.node, index);
                         self.elements.push(Element {
@@ -905,6 +937,370 @@ impl ChartPaint<'_> {
         colors
     }
 
+    /// 绘制数据点标记（散点图与带标记雷达图共用）：支持圆形、方形及关闭标记
+    fn draw_marker(&mut self, px: f32, py: f32, symbol: &str, color: u32, radius: f32) {
+        if symbol == "none" || color >> 24 == 0 {
+            return;
+        }
+        if matches!(symbol, "square" | "dash") {
+            self.elements.push(Element {
+                kind: ElementType::RECT,
+                x: px - radius,
+                y: py - radius,
+                width: radius * 2.0,
+                height: radius * 2.0,
+                fill: color,
+                stroke: 0xffff_ffff,
+                stroke_width: 0.5,
+                ..Element::default()
+            });
+            return;
+        }
+        let size = radius * 2.0;
+        let mut commands = Vec::new();
+        arc_commands(
+            &mut commands,
+            radius,
+            radius,
+            radius,
+            0.0,
+            std::f32::consts::TAU,
+            true,
+        );
+        commands.push(PathCommand::Close);
+        self.elements.push(Element {
+            kind: ElementType::PATH,
+            x: px - radius,
+            y: py - radius,
+            width: size,
+            height: size,
+            fill: color,
+            stroke: 0xffff_ffff,
+            stroke_width: 0.5,
+            paths: vec![Path {
+                fill: true,
+                stroke: true,
+                commands,
+            }],
+            ..Element::default()
+        });
+    }
+
+    /// XY 散点图：依据 xVal/yVal 连续数值坐标定位点集，按 scatterStyle 绘制连线与数据点标记
+    fn scatter_series(
+        &mut self,
+        chart: &SubChart<'_>,
+        plot: Plot,
+        style: ScatterStyle,
+        blanks: &str,
+        date1904: bool,
+        base: &Run,
+    ) {
+        let mut pending_labels = Vec::new();
+        for (s_idx, series) in chart.series.iter().enumerate() {
+            let (line_color, line_width) =
+                self.stroke(series.node, self.theme.accent(series.color_index), 1.5);
+            let marker_node = series.node.child("marker");
+            let marker_symbol = marker_node.map_or("", |m| value(m, "symbol"));
+            let marker_color = marker_node
+                .and_then(|m| m.child("spPr"))
+                .map(|sp| self.theme.fill(sp, line_color, self.doc))
+                .filter(|c| *c != 0)
+                .unwrap_or_else(|| self.series_fill(series.node, series.color_index));
+            let show_marker =
+                (!marker_symbol.is_empty() || style.has_marker()) && marker_symbol != "none";
+
+            let mut previous = None;
+            let count = series.values.len();
+            for i in 0..count {
+                let raw_x = series.x(i);
+                let raw_y = series_value(series, i, blanks);
+                let point = raw_x.zip(raw_y).map(|(x, y)| {
+                    (
+                        fraction(x, chart.x_range, chart.x_axis),
+                        1.0 - fraction(y, chart.y_range, chart.y_axis),
+                    )
+                });
+                if let Some(point) = point {
+                    if style.has_line() {
+                        if let Some(prior) = previous {
+                            if let Some((a, b)) = clip(prior, point) {
+                                self.line(
+                                    (
+                                        plot.x + a.0 as f32 * plot.width,
+                                        plot.y + a.1 as f32 * plot.height,
+                                    ),
+                                    (
+                                        plot.x + b.0 as f32 * plot.width,
+                                        plot.y + b.1 as f32 * plot.height,
+                                    ),
+                                    line_color,
+                                    line_width,
+                                );
+                            }
+                        }
+                    }
+                    if (0.0..=1.0).contains(&point.0) && (0.0..=1.0).contains(&point.1) {
+                        let px = plot.x + point.0 as f32 * plot.width;
+                        let py = plot.y + point.1 as f32 * plot.height;
+                        if show_marker {
+                            self.draw_marker(px, py, marker_symbol, marker_color, 3.0);
+                        }
+                        if let Some(raw) = raw_y {
+                            pending_labels.push((s_idx, i, raw, px, py));
+                        }
+                    }
+                    previous = Some(point);
+                } else if blanks != "span" {
+                    previous = None;
+                }
+            }
+        }
+        for (s_idx, i, raw, px, py) in pending_labels {
+            self.emit_point_label(
+                chart,
+                &chart.series[s_idx],
+                i,
+                raw,
+                None,
+                px,
+                py,
+                plot,
+                date1904,
+                base,
+            );
+        }
+    }
+
+    /// 雷达图：以极坐标绘制同心网线/辐射轴与分类标签，并渲染封闭系列折线、标记或半透明填充多边形
+    #[allow(clippy::too_many_arguments)]
+    fn radar(
+        &mut self,
+        chart: &SubChart<'_>,
+        plot: Plot,
+        style: RadarStyle,
+        primary_y: Option<ValueAxis<'_>>,
+        blanks: &str,
+        date1904: bool,
+        xs: &Run,
+        ys: &Run,
+        base: &Run,
+    ) {
+        let Some(first) = chart.series.first() else {
+            return;
+        };
+        let cat_count = chart
+            .series
+            .iter()
+            .map(|s| s.values.len())
+            .max()
+            .unwrap_or(0);
+        if cat_count == 0 {
+            return;
+        }
+        let scale = if axis_labels(chart.x_axis) {
+            0.34
+        } else {
+            0.42
+        };
+        let radius = plot.width.min(plot.height) * scale;
+        if radius <= 2.0 {
+            return;
+        }
+        let cx = plot.x + plot.width * 0.5;
+        let cy = plot.y + plot.height * 0.5;
+        let angles: Vec<f32> = (0..cat_count)
+            .map(|i| {
+                -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * (i as f32 / cat_count as f32)
+            })
+            .collect();
+
+        // 辐射轴线（从中心出发指向各分类外端）
+        for &angle in &angles {
+            let tip = polar(cx, cy, radius, angle);
+            self.line((cx, cy), (tip[0], tip[1]), 0xffdedede, 0.5);
+        }
+
+        // 同心刻度网环与数值刻度文本
+        if let Some(val) = primary_y {
+            let (min, max) = val.range;
+            let mut tick = (min / val.step).ceil() * val.step;
+            for _ in 0..101 {
+                if tick > max + val.step * 0.000001 {
+                    break;
+                }
+                let frac = fraction(tick, val.range, Some(val.axis)).clamp(0.0, 1.0) as f32;
+                let r = radius * frac;
+                if r > 0.5 && cat_count >= 3 {
+                    for i in 0..cat_count {
+                        let a = polar(cx, cy, r, angles[i]);
+                        let b = polar(cx, cy, r, angles[(i + 1) % cat_count]);
+                        self.line((a[0], a[1]), (b[0], b[1]), 0xffdedede, 0.5);
+                    }
+                }
+                if axis_labels(Some(val.axis)) {
+                    let text = self.number(tick, val.axis, false, date1904);
+                    let lw = estimate_label_width(&text, ys.size).min(plot.width * 0.3);
+                    self.label(
+                        text,
+                        ys.clone(),
+                        Plot {
+                            x: cx - lw - 2.0,
+                            y: cy - r - ys.size * 0.7,
+                            width: lw,
+                            height: ys.size * 1.4,
+                        },
+                        2,
+                    );
+                }
+                tick += val.step;
+            }
+        }
+
+        // 分类标签环绕外圈布置
+        if axis_labels(chart.x_axis) {
+            let label_r = radius + 6.0;
+            let label_h = xs.size * 1.45;
+            for (i, &angle) in angles.iter().enumerate() {
+                let text = if first.dates.is_some() {
+                    first
+                        .x(i)
+                        .zip(chart.x_axis)
+                        .map(|(v, ax)| self.number(v, ax, true, date1904))
+                        .unwrap_or_default()
+                } else {
+                    first
+                        .categories
+                        .get(i)
+                        .copied()
+                        .flatten()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| (i + 1).to_string())
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                let label_w =
+                    estimate_label_width(&text, xs.size).min((plot.width * 0.4).max(24.0));
+                let (cos, sin) = (angle.cos(), angle.sin());
+                let ax = cx + label_r * cos;
+                let ay = cy + label_r * sin;
+                let (lx, align) = if cos >= 0.2 {
+                    (ax, 0)
+                } else if cos <= -0.2 {
+                    (ax - label_w, 2)
+                } else {
+                    (ax - label_w * 0.5, 1)
+                };
+                let ly = if sin <= -0.8 {
+                    ay - label_h
+                } else if sin >= 0.8 {
+                    ay
+                } else {
+                    ay - label_h * 0.5
+                };
+                let max_x = (plot.x + plot.width - label_w).max(plot.x);
+                let max_y = (plot.y + plot.height - label_h).max(plot.y);
+                self.label(
+                    text,
+                    xs.clone(),
+                    Plot {
+                        x: lx.clamp(plot.x, max_x),
+                        y: ly.clamp(plot.y, max_y),
+                        width: label_w,
+                        height: label_h,
+                    },
+                    align,
+                );
+            }
+        }
+
+        let mut pending_labels = Vec::new();
+        for (s_idx, series) in chart.series.iter().enumerate() {
+            let (line_color, line_width) =
+                self.stroke(series.node, self.theme.accent(series.color_index), 1.5);
+            let marker_node = series.node.child("marker");
+            let marker_symbol = marker_node.map_or("", |m| value(m, "symbol"));
+            let show_marker = (!marker_symbol.is_empty() || style == RadarStyle::Marker)
+                && marker_symbol != "none";
+            let mut ring: Vec<Option<(usize, f64, f32, f32)>> = Vec::with_capacity(cat_count);
+            for (i, &angle) in angles.iter().enumerate() {
+                let Some(raw) = series_value(series, i, blanks) else {
+                    ring.push(None);
+                    continue;
+                };
+                let frac = fraction(raw, chart.y_range, chart.y_axis).clamp(0.0, 1.0) as f32;
+                let pt = polar(cx, cy, radius * frac, angle);
+                ring.push(Some((i, raw, pt[0], pt[1])));
+            }
+
+            let dense: Vec<(usize, f64, f32, f32)> = ring.iter().flatten().copied().collect();
+            if style == RadarStyle::Filled && dense.len() >= 3 {
+                let raw_fill = self.series_fill(series.node, series.color_index);
+                let fill = if (raw_fill >> 24) == 0xff {
+                    (raw_fill & 0x00ff_ffff) | 0x5500_0000
+                } else {
+                    raw_fill
+                };
+                let mut commands = Vec::with_capacity(dense.len() + 1);
+                commands.push(PathCommand::Move([dense[0].2, dense[0].3]));
+                for &(_, _, px, py) in dense.iter().skip(1) {
+                    commands.push(PathCommand::Line([px, py]));
+                }
+                commands.push(PathCommand::Close);
+                self.elements.push(Element {
+                    kind: ElementType::PATH,
+                    x: 0.0,
+                    y: 0.0,
+                    width: plot.x * 2.0 + plot.width,
+                    height: plot.y * 2.0 + plot.height,
+                    fill,
+                    paths: vec![Path {
+                        fill: true,
+                        stroke: false,
+                        commands,
+                    }],
+                    ..Element::default()
+                });
+            }
+
+            // 连线闭合多边形边界：按原始槽位相邻连接（允许 blanks=="span" 时跨缺口连接）
+            if blanks == "span" && dense.len() >= 2 {
+                for k in 0..dense.len() {
+                    let a = dense[k];
+                    let b = dense[(k + 1) % dense.len()];
+                    self.line((a.2, a.3), (b.2, b.3), line_color, line_width);
+                }
+            } else {
+                for i in 0..cat_count {
+                    if let (Some(a), Some(b)) = (ring[i], ring[(i + 1) % cat_count]) {
+                        self.line((a.2, a.3), (b.2, b.3), line_color, line_width);
+                    }
+                }
+            }
+            for &(i, raw, px, py) in &dense {
+                if show_marker {
+                    self.draw_marker(px, py, marker_symbol, line_color, 2.5);
+                }
+                pending_labels.push((s_idx, i, raw, px, py));
+            }
+        }
+        for (s_idx, i, raw, px, py) in pending_labels {
+            self.emit_point_label(
+                chart,
+                &chart.series[s_idx],
+                i,
+                raw,
+                None,
+                px,
+                py,
+                plot,
+                date1904,
+                base,
+            );
+        }
+    }
+
     /// 绘制饼图/环形图的贝塞尔扇区，并按 `<c:dLbls>` 布置扇区数据标签。
     fn pie(
         &mut self,
@@ -1033,6 +1429,12 @@ impl ChartPaint<'_> {
         if let (Some(sec_y), Some(sec_style)) = (chart.secondary_y, sec_ys) {
             self.draw_vertical_val_axis(sec_y, sec_style, plot, total_width, chart.date1904, true);
         }
+        if matches!(primary.chart_type, ChartType::Scatter(_)) {
+            if let Some(x_step) = chart.primary_x_step {
+                self.draw_scatter_x_axis(x_axis, primary.x_range, x_step, xs, plot, chart.date1904);
+                return;
+            }
+        }
         let first = &primary.series[0];
         let label_width = if first.dates.is_some() {
             xs.size * 7.0
@@ -1093,6 +1495,61 @@ impl ChartPaint<'_> {
                 );
                 last_right = x + label_width + 2.0;
             }
+        }
+        if !flag(value(x_axis, "delete"), false) {
+            let (color, width) = self.stroke(x_axis, 0xffaaaaaa, 0.5);
+            self.line(
+                (plot.x, plot.y + plot.height),
+                (plot.x + plot.width, plot.y + plot.height),
+                color,
+                width,
+            );
+        }
+    }
+
+    /// 绘制散点图底部数值 X 轴的竖向网格线、刻度文本与底边轴线
+    fn draw_scatter_x_axis(
+        &mut self,
+        x_axis: &Node,
+        x_range: (f64, f64),
+        x_step: f64,
+        xs: Run,
+        plot: Plot,
+        date1904: bool,
+    ) {
+        let (min, max) = x_range;
+        let mut tick = (min / x_step).ceil() * x_step;
+        let label_w = (xs.size * 5.0).min(plot.width);
+        let mut last_right = f32::NEG_INFINITY;
+        for _ in 0..101 {
+            if tick > max + x_step * 0.000001 {
+                break;
+            }
+            let x = plot.x + fraction(tick, x_range, Some(x_axis)) as f32 * plot.width;
+            if let Some(grid) = x_axis.child("majorGridlines") {
+                let (color, width) = self.stroke(grid, 0xffdedede, 0.5);
+                self.line((x, plot.y), (x, plot.y + plot.height), color, width);
+            }
+            if axis_labels(Some(x_axis)) {
+                let lx =
+                    (x - label_w / 2.0).clamp(0.0, (plot.x + plot.width + 8.0 - label_w).max(0.0));
+                if lx >= last_right {
+                    let text = self.number(tick, x_axis, x_axis.name == "dateAx", date1904);
+                    self.label(
+                        text,
+                        xs.clone(),
+                        Plot {
+                            x: lx,
+                            y: plot.y + plot.height + 3.0,
+                            width: label_w,
+                            height: xs.size * 1.6,
+                        },
+                        1,
+                    );
+                    last_right = lx + label_w + 2.0;
+                }
+            }
+            tick += x_step;
         }
         if !flag(value(x_axis, "delete"), false) {
             let (color, width) = self.stroke(x_axis, 0xffaaaaaa, 0.5);

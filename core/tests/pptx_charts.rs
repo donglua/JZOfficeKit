@@ -1119,6 +1119,192 @@ fn combo_rejects_mixed_pie_or_horizontal_bar() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn scatter_chart_renders_xy_points_markers_and_numeric_axes() -> TestResult {
+    let scatter = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart>
+    <c:plotArea>
+      <c:scatterChart>
+        <c:scatterStyle val="lineMarker"/>
+        <c:ser>
+          <c:idx val="0"/><c:order val="0"/>
+          <c:tx><c:v>Measurements</c:v></c:tx>
+          <c:spPr><a:ln w="19050"><a:solidFill><a:srgbClr val="C03050"/></a:solidFill></a:ln></c:spPr>
+          <c:marker><c:symbol val="circle"/></c:marker>
+          <c:xVal><c:numRef><c:numCache><c:ptCount val="3"/>
+            <c:pt idx="0"><c:v>10</c:v></c:pt>
+            <c:pt idx="1"><c:v>25</c:v></c:pt>
+            <c:pt idx="2"><c:v>50</c:v></c:pt>
+          </c:numCache></c:numRef></c:xVal>
+          <c:yVal><c:numRef><c:numCache><c:ptCount val="3"/>
+            <c:pt idx="0"><c:v>5</c:v></c:pt>
+            <c:pt idx="1"><c:v>40</c:v></c:pt>
+            <c:pt idx="2"><c:v>20</c:v></c:pt>
+          </c:numCache></c:numRef></c:yVal>
+        </c:ser>
+        <c:axId val="100"/><c:axId val="200"/>
+      </c:scatterChart>
+      <c:valAx><c:axId val="100"/><c:scaling><c:orientation val="minMax"/><c:min val="0"/><c:max val="60"/></c:scaling><c:axPos val="b"/></c:valAx>
+      <c:valAx><c:axId val="200"/><c:scaling><c:orientation val="minMax"/><c:min val="0"/><c:max val="50"/></c:scaling><c:axPos val="l"/></c:valAx>
+    </c:plotArea>
+    <c:legend><c:legendPos val="b"/></c:legend>
+  </c:chart>
+</c:chartSpace>"#;
+    let doc = document(scatter)?;
+    assert!(doc.warnings.iter().any(|w| w.contains("scatter charts")));
+    let page = &doc.pages[0];
+    let segments = data_segments(page, RED);
+    assert_eq!(segments.len(), 2, "Expected 2 scatter segments");
+    let seg1_dx = segments[0][1].0 - segments[0][0].0;
+    let seg2_dx = segments[1][1].0 - segments[1][0].0;
+    // X 值分别为 10 -> 25 -> 50，间距比例应近似 15 : 25（连续 XY 数值映射而非等距分类）
+    checks::near(seg1_dx / seg2_dx, 15.0 / 25.0);
+
+    let markers: Vec<_> = page
+        .elements
+        .iter()
+        .filter(|el| matches!(el.kind, ElementType::PATH) && el.fill == RED)
+        .collect();
+    assert_eq!(markers.len(), 3, "Expected 3 circle markers");
+
+    // 仅标记模式（scatterStyle="marker"）只绘散点不连线
+    let marker_only = scatter.replace(r#"val="lineMarker""#, r#"val="marker""#);
+    let doc_markers = document(&marker_only)?;
+    let page_m = &doc_markers.pages[0];
+    assert_eq!(data_segments(page_m, RED).len(), 0);
+    let markers_only_count = page_m
+        .elements
+        .iter()
+        .filter(|el| matches!(el.kind, ElementType::PATH) && el.fill == RED)
+        .count();
+    assert_eq!(markers_only_count, 3);
+    Ok(())
+}
+
+#[test]
+fn radar_chart_renders_closed_polygon_radial_grid_and_filled_style() -> TestResult {
+    let radar = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart>
+    <c:plotArea>
+      <c:radarChart>
+        <c:radarStyle val="filled"/>
+        <c:ser>
+          <c:idx val="0"/><c:order val="0"/>
+          <c:tx><c:v>Hero</c:v></c:tx>
+          <c:spPr>
+            <a:solidFill><a:srgbClr val="C03050"/></a:solidFill>
+            <a:ln w="19050"><a:solidFill><a:srgbClr val="C03050"/></a:solidFill></a:ln>
+          </c:spPr>
+          <c:cat><c:strRef><c:strCache><c:ptCount val="4"/>
+            <c:pt idx="0"><c:v>Speed</c:v></c:pt>
+            <c:pt idx="1"><c:v>Power</c:v></c:pt>
+            <c:pt idx="2"><c:v>Defense</c:v></c:pt>
+            <c:pt idx="3"><c:v>Range</c:v></c:pt>
+          </c:strCache></c:strRef></c:cat>
+          <c:val><c:numRef><c:numCache><c:ptCount val="4"/>
+            <c:pt idx="0"><c:v>80</c:v></c:pt>
+            <c:pt idx="1"><c:v>60</c:v></c:pt>
+            <c:pt idx="2"><c:v>40</c:v></c:pt>
+            <c:pt idx="3"><c:v>100</c:v></c:pt>
+          </c:numCache></c:numRef></c:val>
+        </c:ser>
+        <c:axId val="100"/><c:axId val="200"/>
+      </c:radarChart>
+      <c:catAx><c:axId val="100"/><c:scaling><c:orientation val="minMax"/></c:scaling></c:catAx>
+      <c:valAx><c:axId val="200"/><c:scaling><c:orientation val="minMax"/><c:min val="0"/><c:max val="100"/></c:scaling></c:valAx>
+    </c:plotArea>
+    <c:legend><c:legendPos val="b"/></c:legend>
+  </c:chart>
+</c:chartSpace>"#;
+    let doc = document(radar)?;
+    assert!(doc.warnings.iter().any(|w| w.contains("radar charts")));
+    let page = &doc.pages[0];
+
+    let translucent_red = (RED & 0x00ff_ffff) | 0x5500_0000;
+    let filled = area_paths(page, translucent_red);
+    assert_eq!(filled.len(), 1, "Expected filled radar polygon path");
+    assert_eq!(path_command_count(filled[0], PathCommandKind::Close), 1);
+
+    // 4 个顶点应形成 4 条红色闭合边线（可能包含水平/竖直或斜边，按红色线元素数统计，排除图例与标题）
+    let radar_outline_lines: Vec<_> = page
+        .elements
+        .iter()
+        .filter(|el| {
+            matches!(el.kind, ElementType::LINE)
+                && el.stroke == RED
+                && el.transform[5] < FRAME[1] + FRAME[3] - 20.0
+        })
+        .collect();
+    assert_eq!(
+        radar_outline_lines.len(),
+        4,
+        "Expected 4 closed radar outline edges"
+    );
+
+    // 验证四向分类标签位置分布：Speed 在上，Defense 在下，Power 在右，Range 在左
+    let find_label = |name: &str| {
+        page.elements
+            .iter()
+            .find(|el| matches!(el.kind, ElementType::TEXT) && checks::text(&el.paragraphs) == name)
+    };
+    let speed = find_label("Speed").ok_or("Missing Speed label")?;
+    let power = find_label("Power").ok_or("Missing Power label")?;
+    let defense = find_label("Defense").ok_or("Missing Defense label")?;
+    let range = find_label("Range").ok_or("Missing Range label")?;
+    assert!(speed.transform[5] < defense.transform[5]);
+    assert!(range.transform[4] < power.transform[4]);
+    Ok(())
+}
+
+#[test]
+fn radar_and_scatter_reject_invalid_styles_and_mismatched_xy() -> TestResult {
+    let invalid_radar = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart><c:plotArea>
+    <c:radarChart><c:radarStyle val="unknown"/>
+      <c:ser><c:idx val="0"/><c:order val="0"/>
+        <c:spPr><a:ln w="19050"><a:solidFill><a:srgbClr val="C03050"/></a:solidFill></a:ln></c:spPr>
+        <c:val><c:numRef><c:numCache><c:ptCount val="3"/>
+          <c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>20</c:v></c:pt><c:pt idx="2"><c:v>30</c:v></c:pt>
+        </c:numCache></c:numRef></c:val>
+      </c:ser>
+      <c:axId val="100"/><c:axId val="200"/>
+    </c:radarChart>
+    <c:catAx><c:axId val="100"/><c:scaling><c:orientation val="minMax"/></c:scaling></c:catAx>
+    <c:valAx><c:axId val="200"/><c:scaling><c:orientation val="minMax"/></c:scaling></c:valAx>
+  </c:plotArea></c:chart>
+</c:chartSpace>"#;
+    assert_omitted(invalid_radar)?;
+
+    let mismatched_scatter = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart><c:plotArea>
+    <c:scatterChart><c:scatterStyle val="marker"/>
+      <c:ser><c:idx val="0"/><c:order val="0"/>
+        <c:spPr><a:ln w="19050"><a:solidFill><a:srgbClr val="C03050"/></a:solidFill></a:ln></c:spPr>
+        <c:xVal><c:numRef><c:numCache><c:ptCount val="3"/>
+          <c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt><c:pt idx="2"><c:v>3</c:v></c:pt>
+        </c:numCache></c:numRef></c:xVal>
+        <c:yVal><c:numRef><c:numCache><c:ptCount val="2"/>
+          <c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>20</c:v></c:pt>
+        </c:numCache></c:numRef></c:yVal>
+      </c:ser>
+      <c:axId val="100"/><c:axId val="200"/>
+    </c:scatterChart>
+    <c:valAx><c:axId val="100"/><c:scaling><c:orientation val="minMax"/></c:scaling></c:valAx>
+    <c:valAx><c:axId val="200"/><c:scaling><c:orientation val="minMax"/></c:scaling></c:valAx>
+  </c:plotArea></c:chart>
+</c:chartSpace>"#;
+    assert_omitted(mismatched_scatter)?;
+    Ok(())
+}
+
 fn area_chart() -> String {
     fixture::category_chart().replace("lineChart", "areaChart")
 }
