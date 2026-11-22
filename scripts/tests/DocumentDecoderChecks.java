@@ -311,7 +311,7 @@ public final class DocumentDecoderChecks {
         String json = "{\"schemaVersion\":9,\"kind\":\"XLSX\",\"width\":595,\"warnings\":[\"w1\"],\"blocks\":[],\"pages\":[],"
             + "\"cellStyles\":[{\"fontSize\":13,\"bold\":true,\"italic\":true,\"underline\":true,\"color\":4279385946,"
             + "\"fill\":4294967295,\"alignment\":3,\"verticalAlignment\":\"BOTTOM\",\"wrap\":true,"
-            + "\"borders\":[4278190335,null,4278190335,null]}],"
+            + "\"indent\":2,\"shrinkToFit\":true,\"borders\":[4278190335,null,4278190335,null]}],"
             + "\"sheets\":[{\"name\":\"Sheet 1\",\"rowHeights\":[28,0,36],\"columnWidths\":[80,0,100],"
             + "\"cells\":[{\"row\":0,\"column\":0,\"text\":\"123.45\",\"style\":0,\"numeric\":true}],"
             + "\"merges\":[{\"startRow\":0,\"startColumn\":0,\"endRow\":2,\"endColumn\":2}]}]}";
@@ -323,12 +323,24 @@ public final class DocumentDecoderChecks {
         check(sheet.rowHeights[1] == 0 && sheet.columnWidths[1] == 0, "hidden dimensions retained");
         check(sheet.cells.size() == 1 && sheet.cells.get(0).numeric && "123.45".equals(sheet.cells.get(0).text), "cell decoded");
         check(style.fill == 0xffffffff && style.bold && style.italic && style.underline && style.wrap, "cell style decoded");
+        check(style.indent == 2 && style.shrinkToFit, "cell indent and shrink-to-fit decoded");
+        check(style.indentWidth(4, 0) == 8 && style.indentWidth(4, 2) == 8
+            && style.indentWidth(4, 1) == 0, "indent applies to left/right alignment only");
+        check(style.fittedFontSize(13, 200, 100) == 13, "wrap disables shrink-to-fit");
+        style.wrap = false;
+        check(style.fittedFontSize(13, 200, 100) == 6.5f, "font shrinks to available width");
+        check(style.fittedFontSize(13, 50, 100) == 13, "short text is never enlarged");
+        style.shrinkToFit = false;
+        check(style.fittedFontSize(13, 200, 100) == 13, "shrink-to-fit opt-in");
+        style.shrinkToFit = true;
+        style.wrap = true;
         check(style.borders[0] != null && style.borders[0] == 0xff0000ff && style.borders[1] == null, "borders decoded");
         check(sheet.merges.get(0).endRow == 2 && sheet.merges.get(0).endColumn == 2, "merge decoded");
 
         reject(json.replace("\"schemaVersion\":9", "\"schemaVersion\":8"), "Unsupported core model version", "schema 8");
         reject(json.replace("\"schemaVersion\":9,", ""), "Invalid core display model", "missing schemaVersion");
         reject(json.replace("\"style\":0", "\"style\":1"), "Invalid core display model", "out of range style");
+        reject(json.replace("\"indent\":2", "\"indent\":251"), "Invalid core display model", "out of range indent");
         reject(json.replace("\"row\":0", "\"row\":0.5"), "Invalid core display model", "fractional row");
         reject(json.replace("[28,0,36]", "[-1,0,36]"), "Invalid core display model", "negative dimension");
         reject(json.replace("\"endColumn\":2", "\"endColumn\":3"), "Invalid core display model", "out of range merge");

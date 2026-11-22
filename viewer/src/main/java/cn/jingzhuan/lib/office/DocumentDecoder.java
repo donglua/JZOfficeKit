@@ -232,6 +232,8 @@ final class DocumentDecoder {
                 case "italic": style.italic = c.nextBoolean(); hasItalic = true; break;
                 case "underline": style.underline = c.nextBoolean(); hasUnderline = true; break;
                 case "wrap": style.wrap = c.nextBoolean(); hasWrap = true; break;
+                case "indent": style.indent = indexValue(c.nextDouble(), 251, "indent"); break;
+                case "shrinkToFit": style.shrinkToFit = c.nextBoolean(); break;
                 case "color": style.color = (int) c.nextLong(); hasColor = true; break;
                 case "fill": style.fill = (int) c.nextLong(); hasFill = true; break;
                 case "alignment": style.alignment = indexValue(c.nextDouble(), 4, "alignment"); hasAlign = true; break;

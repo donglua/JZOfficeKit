@@ -1,6 +1,7 @@
 import { displaySync } from '@kit.ArkGraphics2D';
 import * as model from '../core/OfficeModel';
 import { RenderUtils } from './RenderUtils';
+import { cellIndentWidth, fittedCellFontSize } from './SheetTextStyle';
 import {
   EffectiveFrozen,
   FREEZE_LINE_COLOR,
@@ -2037,7 +2038,7 @@ export struct SpreadsheetView {
 
     let effectiveFs = style?.fontSize ?? 11;
     if (style?.vertAlign) effectiveFs *= 0.65;
-    const fontSize = Math.max(6, effectiveFs * scale);
+    let fontSize = Math.max(6, effectiveFs * scale);
     const italic = style?.italic ? 'italic ' : '';
     const fontFace = RenderUtils.resolveFontFamily(style?.fontFace, true);
     const fontWeight = RenderUtils.resolveFontBold(style?.fontFace, style?.bold) ? 'bold ' : '';
@@ -2047,10 +2048,10 @@ export struct SpreadsheetView {
     ctx.textAlign = 'left';
 
     const align = style?.alignment === 3 ? (cell.numeric ? 2 : 0) : (style?.alignment ?? 0);
-    const availW = Math.max(1, colW - 4);
+    const characterWidth = ctx.measureText('0').width;
+    const indent = Math.min(cellIndentWidth(style?.indent, characterWidth, align), Math.max(0, colW - 5));
+    const availW = Math.max(1, colW - 4 - indent);
     const availH = Math.max(1, rowH - 2);
-    const lineHeight = fontSize * 1.25;
-    const maxLines = Math.max(1, Math.ceil(availH / lineHeight) + 1);
 
     // 字符截断已在 Rust core 完成；此处保留兜底保护（对齐 Android previewText：代理对安全 + 省略号）
     let rawText = cell.text;
@@ -2063,6 +2064,17 @@ export struct SpreadsheetView {
       }
       rawText = rawText.substring(0, end) + '\u2026';
     }
+
+    if (style?.wrap !== true) {
+      let desiredWidth = 0;
+      for (const line of rawText.split('\n')) {
+        desiredWidth = Math.max(desiredWidth, ctx.measureText(line).width);
+      }
+      fontSize = fittedCellFontSize(fontSize, desiredWidth, availW, style?.shrinkToFit, false);
+      ctx.font = `${italic}${fontWeight}${fontSize}vp ${fontFace}`;
+    }
+    const lineHeight = fontSize * 1.25;
+    const maxLines = Math.max(1, Math.ceil(availH / lineHeight) + 1);
 
     let finalLines: string[] = [];
     if (style?.wrap) {
@@ -2144,7 +2156,7 @@ export struct SpreadsheetView {
 
     for (let i = 0; i < lineCount; i++) {
       const line = finalLines[i];
-      let textX = left + 2;
+      let textX = left + 2 + (align === 0 ? indent : 0);
       let textW = 0;
       if (align !== 0 || style?.underline || style?.strike) {
         textW = ctx.measureText(line).width;

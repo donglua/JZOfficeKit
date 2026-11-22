@@ -62,7 +62,20 @@ final class SpreadsheetDocument {
         String vertAlign = "";
         int color = 0xff202124, fill;
         int alignment = 3;
+        int indent;
+        boolean shrinkToFit;
         OfficeDocument.VerticalAlignment verticalAlignment = OfficeDocument.VerticalAlignment.BOTTOM;
         final Integer[] borders = new Integer[4];
+
+        float indentWidth(float characterWidth, int resolvedAlignment) {
+            if (indent <= 0 || (resolvedAlignment != 0 && resolvedAlignment != 2)) return 0;
+            return indent * Math.max(0, characterWidth);
+        }
+
+        float fittedFontSize(float baseSize, float desiredWidth, float availableWidth) {
+            if (!shrinkToFit || wrap || desiredWidth <= availableWidth || desiredWidth <= 0) return baseSize;
+            float ratio = Math.max(0, availableWidth) / desiredWidth;
+            return Math.max(1, Math.min(baseSize, baseSize * ratio));
+        }
     }
 }

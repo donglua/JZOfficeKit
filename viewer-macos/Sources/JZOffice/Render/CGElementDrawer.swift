@@ -2399,7 +2399,31 @@ public enum CGElementDrawer {
         if let vertAlign = style?.vertAlign, !vertAlign.isEmpty {
             rawFontSize *= 0.65
         }
-        let fontSize = max(6, rawFontSize)
+        let requestedFontSize = max(6, rawFontSize)
+        let baseFont = resolveNSFont(
+            face: style?.fontFace ?? "",
+            size: requestedFontSize,
+            bold: style?.bold ?? false,
+            italic: style?.italic ?? false
+        )
+        let baseLine = CTLineCreateWithAttributedString(NSAttributedString(
+            string: cell.text,
+            attributes: [.font: baseFont]
+        ))
+        let desiredWidth = CGFloat(CTLineGetTypographicBounds(baseLine, nil, nil, nil))
+        let rawAlignment = style?.alignment ?? 3
+        let align = rawAlignment == 3 ? (cell.numeric ? 2 : 0) : rawAlignment
+        let characterWidth = NSAttributedString(string: "0", attributes: [.font: baseFont]).size().width
+        let indent = min(
+            style?.indentWidth(characterWidth: characterWidth, resolvedAlignment: align) ?? 0,
+            max(0, rect.width - 9)
+        )
+        let availableWidth = max(1, rect.width - 8 - indent)
+        let fontSize = style?.fittedFontSize(
+            baseSize: requestedFontSize,
+            desiredWidth: desiredWidth,
+            availableWidth: availableWidth
+        ) ?? requestedFontSize
         let font = resolveNSFont(
             face: style?.fontFace ?? "",
             size: fontSize,
@@ -2435,14 +2459,13 @@ public enum CGElementDrawer {
         ctx.saveGState()
         ctx.clip(to: rect.insetBy(dx: 2, dy: 1))
         ctx.textMatrix = CGAffineTransform(scaleX: 1.0, y: -1.0)
-        let align = style?.alignment ?? (cell.numeric ? 2 : 0)
         let tx: CGFloat
         if align == 1 {
             tx = rect.minX + max(3, (rect.width - textW) / 2.0)
         } else if align == 2 {
-            tx = rect.maxX - 4 - textW
+            tx = rect.maxX - 4 - indent - textW
         } else {
-            tx = rect.minX + 4
+            tx = rect.minX + 4 + indent
         }
         let ty = rect.minY + (rect.height + ascent - descent) / 2.0
         ctx.textPosition = CGPoint(x: tx, y: ty)

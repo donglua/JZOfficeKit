@@ -44,7 +44,7 @@ final class SheetRenderer {
     private final List<Merge> visibleMerges = new ArrayList<>();
     private List<Merge>[] mergeBuckets;
     private int renderGen;
-    private final LinkedHashMap<SpreadsheetDocument.Cell, StaticLayout> layouts = new LinkedHashMap<>(32, .75f, true);
+    private final LinkedHashMap<SpreadsheetDocument.Cell, CellLayout> layouts = new LinkedHashMap<>(32, .75f, true);
     private int layoutCost;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint headerFont = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -358,11 +358,13 @@ final class SheetRenderer {
         fill(canvas, bounds, style.fill);
         float availableWidth = bounds.width() - 2 * PADDING, availableHeight = bounds.height() - 2 * VERTICAL_PADDING;
         if (cell.text.isEmpty() || availableWidth <= 0 || availableHeight <= 0) return;
-        StaticLayout layout = textLayout(cell, style, availableWidth, availableHeight);
+        CellLayout cellLayout = textLayout(cell, style, availableWidth, availableHeight);
+        StaticLayout layout = cellLayout.layout;
         int alignment = alignment(cell, style);
         float x = bounds.left + PADDING;
-        if (alignment == 1) x += (availableWidth - layout.getWidth()) / 2;
-        else if (alignment == 2) x += availableWidth - layout.getWidth();
+        if (alignment == 0) x += cellLayout.indent;
+        else if (alignment == 1) x += (availableWidth - layout.getWidth()) / 2;
+        else if (alignment == 2) x += availableWidth - layout.getWidth() - cellLayout.indent;
         float y = bounds.top + VERTICAL_PADDING;
         float remaining = Math.max(0, availableHeight - layout.getHeight());
         if (style.verticalAlignment == OfficeDocument.VerticalAlignment.CENTER) y += remaining / 2;
@@ -379,9 +381,9 @@ final class SheetRenderer {
         canvas.restoreToCount(save);
     }
 
-    private StaticLayout textLayout(SpreadsheetDocument.Cell cell, SpreadsheetDocument.CellStyle style,
-                                    float availableWidth, float availableHeight) {
-        StaticLayout cached = layouts.get(cell);
+    private CellLayout textLayout(SpreadsheetDocument.Cell cell, SpreadsheetDocument.CellStyle style,
+                                  float availableWidth, float availableHeight) {
+        CellLayout cached = layouts.get(cell);
         if (cached != null) return cached;
         TextPaint font = new TextPaint(Paint.ANTI_ALIAS_FLAG);
         font.setTextSize(style.fontSize); font.setColor(style.color); font.setUnderlineText(style.underline);
@@ -393,26 +395,32 @@ final class SheetRenderer {
             font.setTextSize(Math.max(1f, style.fontSize * 0.65f));
         }
         String text = cell.previewText();
-        int layoutWidth = Math.max(1, (int) availableWidth);
-        if (!style.wrap) layoutWidth = Math.max(layoutWidth, (int) Math.ceil(Layout.getDesiredWidth(text, font)));
         int alignment = alignment(cell, style);
+        float indent = Math.min(style.indentWidth(font.measureText("0"), alignment), Math.max(0, availableWidth - 1));
+        float textWidth = Math.max(1, availableWidth - indent);
+        float desiredWidth = Layout.getDesiredWidth(text, font);
+        font.setTextSize(style.fittedFontSize(font.getTextSize(), desiredWidth, textWidth));
+        int layoutWidth = Math.max(1, (int) Math.ceil(textWidth));
+        if (!style.wrap) layoutWidth = Math.max(layoutWidth, (int) Math.ceil(Layout.getDesiredWidth(text, font)));
         Layout.Alignment textAlignment = alignment == 1 ? Layout.Alignment.ALIGN_CENTER
             : alignment == 2 ? Layout.Alignment.ALIGN_OPPOSITE : Layout.Alignment.ALIGN_NORMAL;
         int maxLines = Math.max(1, (int) Math.ceil(availableHeight / Math.max(1, font.getFontSpacing())) + 1);
         StaticLayout layout = StaticLayout.Builder.obtain(text, 0, text.length(), font, layoutWidth)
             .setAlignment(textAlignment).setTextDirection(TextDirectionHeuristics.LTR).setIncludePad(false)
             .setMaxLines(maxLines).build();
+        CellLayout result = new CellLayout(layout, indent);
         int cost = layout.getText().length() + 8 * layout.getLineCount();
         if (cost <= MAX_LAYOUT_COST) {
-            Iterator<Map.Entry<SpreadsheetDocument.Cell, StaticLayout>> iterator = layouts.entrySet().iterator();
+            Iterator<Map.Entry<SpreadsheetDocument.Cell, CellLayout>> iterator = layouts.entrySet().iterator();
             while (iterator.hasNext() && (layouts.size() >= MAX_CACHED_LAYOUTS || layoutCost + cost > MAX_LAYOUT_COST)) {
-                Map.Entry<SpreadsheetDocument.Cell, StaticLayout> oldest = iterator.next();
-                layoutCost -= oldest.getValue().getText().length() + 8 * oldest.getValue().getLineCount();
+                Map.Entry<SpreadsheetDocument.Cell, CellLayout> oldest = iterator.next();
+                StaticLayout oldLayout = oldest.getValue().layout;
+                layoutCost -= oldLayout.getText().length() + 8 * oldLayout.getLineCount();
                 iterator.remove();
             }
-            layouts.put(cell, layout); layoutCost += cost;
+            layouts.put(cell, result); layoutCost += cost;
         }
-        return layout;
+        return result;
     }
 
     private static int alignment(SpreadsheetDocument.Cell cell, SpreadsheetDocument.CellStyle style) {
@@ -630,6 +638,17 @@ final class SheetRenderer {
     private void stroke(Canvas canvas, RectF bounds, int color, float strokeWidth) {
         paint.setStyle(Paint.Style.STROKE); paint.setColor(color); paint.setStrokeWidth(strokeWidth);
         canvas.drawRect(bounds, paint);
+    }
+
+    /** 单元格布局及其左右缩进，缓存时保持同一套测量结果 */
+    private static final class CellLayout {
+        final StaticLayout layout;
+        final float indent;
+
+        CellLayout(StaticLayout layout, float indent) {
+            this.layout = layout;
+            this.indent = indent;
+        }
     }
 
     /** 单帧冻结几何（文档坐标系，与绘制 viewport 同一套坐标） */

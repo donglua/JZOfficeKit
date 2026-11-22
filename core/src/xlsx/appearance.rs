@@ -1,4 +1,4 @@
-use super::{boolean, colors::Colors, dimension};
+use super::{boolean, colors::Colors, dimension, unsigned};
 use crate::model::{CellStyle, Document, VertAlign, VerticalAlignment};
 use crate::xml::Node;
 use crate::{Error, Result};
@@ -106,12 +106,18 @@ pub(super) fn alignment(style: &mut CellStyle, node: &Node, document: &mut Docum
         };
     }
     style.wrap = boolean(node.attr("wrapText"), style.wrap)?;
-    if ["textRotation", "indent", "readingOrder", "shrinkToFit"]
+    if !node.attr("indent").is_empty() {
+        style.indent = unsigned(node.attr("indent"))?;
+        if style.indent > 250 {
+            return Err(Error::Limit("XLSX cell indent exceeds 250"));
+        }
+    }
+    style.shrink_to_fit = boolean(node.attr("shrinkToFit"), style.shrink_to_fit)?;
+    if ["textRotation", "readingOrder"]
         .iter()
         .any(|name| !matches!(node.attr(name), "" | "0" | "false"))
     {
-        document
-            .warn("Text rotation, indentation, reading order and shrink-to-fit are not supported");
+        document.warn("Text rotation and reading order are not supported");
     }
     Ok(())
 }

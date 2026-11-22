@@ -461,6 +461,8 @@ public struct OfficeCellStyle: Codable, Sendable {
     public let fontFace: String
     public let strike: Bool
     public let vertAlign: String
+    public let indent: Int
+    public let shrinkToFit: Bool
 
     public init(
         fontSize: CGFloat = 11,
@@ -475,7 +477,9 @@ public struct OfficeCellStyle: Codable, Sendable {
         borders: [UInt32?] = [],
         fontFace: String = "",
         strike: Bool = false,
-        vertAlign: String = ""
+        vertAlign: String = "",
+        indent: Int = 0,
+        shrinkToFit: Bool = false
     ) {
         self.fontSize = fontSize
         self.bold = bold
@@ -490,11 +494,13 @@ public struct OfficeCellStyle: Codable, Sendable {
         self.fontFace = fontFace
         self.strike = strike
         self.vertAlign = vertAlign
+        self.indent = indent
+        self.shrinkToFit = shrinkToFit
     }
 
     enum CodingKeys: String, CodingKey {
         case fontSize, bold, italic, underline, color, fill, alignment, verticalAlignment, wrap, borders
-        case fontFace, strike, vertAlign
+        case fontFace, strike, vertAlign, indent, shrinkToFit
     }
 
     public init(from decoder: Decoder) throws {
@@ -512,6 +518,19 @@ public struct OfficeCellStyle: Codable, Sendable {
         self.fontFace = try c.decodeIfPresent(String.self, forKey: .fontFace) ?? ""
         self.strike = try c.decodeIfPresent(Bool.self, forKey: .strike) ?? false
         self.vertAlign = try c.decodeIfPresent(String.self, forKey: .vertAlign) ?? ""
+        self.indent = try c.decodeIfPresent(Int.self, forKey: .indent) ?? 0
+        self.shrinkToFit = try c.decodeIfPresent(Bool.self, forKey: .shrinkToFit) ?? false
+    }
+
+    func indentWidth(characterWidth: CGFloat, resolvedAlignment: Int) -> CGFloat {
+        guard indent > 0, resolvedAlignment == 0 || resolvedAlignment == 2 else { return 0 }
+        return CGFloat(indent) * max(0, characterWidth)
+    }
+
+    func fittedFontSize(baseSize: CGFloat, desiredWidth: CGFloat, availableWidth: CGFloat) -> CGFloat {
+        guard shrinkToFit, !wrap, desiredWidth > availableWidth, desiredWidth > 0 else { return baseSize }
+        let ratio = max(0, availableWidth) / desiredWidth
+        return max(1, min(baseSize, baseSize * ratio))
     }
 }
 

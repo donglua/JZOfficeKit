@@ -893,13 +893,22 @@ struct JZOfficeTests {
             "borders": [],
             "fontFace": "Consolas",
             "strike": true,
-            "vertAlign": "superscript"
+            "vertAlign": "superscript",
+            "indent": 2,
+            "shrinkToFit": true
         }
         """.data(using: .utf8)!
         let decodedStyle = try JSONDecoder().decode(OfficeCellStyle.self, from: cellStyleJson)
         #expect(decodedStyle.fontFace == "Consolas")
         #expect(decodedStyle.strike == true)
         #expect(decodedStyle.vertAlign == "superscript")
+        #expect(decodedStyle.indent == 2)
+        #expect(decodedStyle.shrinkToFit == true)
+        #expect(decodedStyle.indentWidth(characterWidth: 4, resolvedAlignment: 0) == 8)
+        #expect(decodedStyle.indentWidth(characterWidth: 4, resolvedAlignment: 2) == 8)
+        #expect(decodedStyle.indentWidth(characterWidth: 4, resolvedAlignment: 1) == 0)
+        #expect(decodedStyle.fittedFontSize(baseSize: 14, desiredWidth: 200, availableWidth: 100) == 7)
+        #expect(decodedStyle.fittedFontSize(baseSize: 14, desiredWidth: 50, availableWidth: 100) == 14)
 
         // 5. 缺省字段时 OfficeCellStyle 回退默认值
         let legacyStyleJson = """
@@ -920,6 +929,9 @@ struct JZOfficeTests {
         #expect(defaultStyle.fontFace == "")
         #expect(defaultStyle.strike == false)
         #expect(defaultStyle.vertAlign == "")
+        #expect(defaultStyle.indent == 0)
+        #expect(defaultStyle.shrinkToFit == false)
+        #expect(defaultStyle.fittedFontSize(baseSize: 12, desiredWidth: 200, availableWidth: 100) == 12)
 
         // 6. 电子表格单元格样式包含 fontFace、strike 与 vertAlign 时绘制无崩溃且生成有效图像
         let sheetJson = """

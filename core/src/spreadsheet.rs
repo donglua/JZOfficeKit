@@ -205,6 +205,10 @@ pub struct CellStyle {
     pub alignment: u8,
     pub vertical_alignment: VerticalAlignment,
     pub wrap: bool,
+    #[serde(skip_serializing_if = "crate::model::is_zero_u32")]
+    pub indent: u32,
+    #[serde(skip_serializing_if = "crate::model::is_false")]
+    pub shrink_to_fit: bool,
     pub borders: [Option<u32>; 4],
 }
 
@@ -223,6 +227,8 @@ impl Default for CellStyle {
             alignment: 3,
             vertical_alignment: VerticalAlignment::Bottom,
             wrap: false,
+            indent: 0,
+            shrink_to_fit: false,
             borders: [None; 4],
         }
     }

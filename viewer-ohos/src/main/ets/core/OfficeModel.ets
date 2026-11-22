@@ -140,6 +140,8 @@ export interface CellStyle {
   alignment: number;
   verticalAlignment: VerticalAlignment;
   wrap: boolean;
+  indent?: number;
+  shrinkToFit?: boolean;
   borders: [number | null, number | null, number | null, number | null];
 }
 
