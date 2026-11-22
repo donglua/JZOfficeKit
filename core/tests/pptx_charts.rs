@@ -896,6 +896,229 @@ fn line_chart_data_labels_render_inside_frame() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn combo_column_and_line_with_shared_axis_aligns_points_to_columns() -> TestResult {
+    let chart = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart>
+    <c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Combo Shared</a:t></a:r></a:p></c:rich></c:tx></c:title>
+    <c:plotArea>
+      <c:barChart>
+        <c:barDir val="col"/><c:grouping val="clustered"/>
+        <c:ser>
+          <c:idx val="0"/><c:order val="0"/>
+          <c:tx><c:v>Sales</c:v></c:tx>
+          <c:spPr><a:solidFill><a:srgbClr val="C03050"/></a:solidFill></c:spPr>
+          <c:cat><c:strRef><c:strCache><c:ptCount val="3"/>
+            <c:pt idx="0"><c:v>Q1</c:v></c:pt>
+            <c:pt idx="1"><c:v>Q2</c:v></c:pt>
+            <c:pt idx="2"><c:v>Q3</c:v></c:pt>
+          </c:strCache></c:strRef></c:cat>
+          <c:val><c:numRef><c:numCache><c:ptCount val="3"/>
+            <c:pt idx="0"><c:v>10</c:v></c:pt>
+            <c:pt idx="1"><c:v>20</c:v></c:pt>
+            <c:pt idx="2"><c:v>30</c:v></c:pt>
+          </c:numCache></c:numRef></c:val>
+        </c:ser>
+        <c:axId val="100"/><c:axId val="200"/>
+      </c:barChart>
+      <c:lineChart>
+        <c:grouping val="standard"/>
+        <c:ser>
+          <c:idx val="1"/><c:order val="1"/>
+          <c:tx><c:v>Target</c:v></c:tx>
+          <c:spPr><a:ln w="19050"><a:solidFill><a:srgbClr val="2070C0"/></a:solidFill></a:ln></c:spPr>
+          <c:cat><c:strRef><c:strCache><c:ptCount val="3"/>
+            <c:pt idx="0"><c:v>Q1</c:v></c:pt>
+            <c:pt idx="1"><c:v>Q2</c:v></c:pt>
+            <c:pt idx="2"><c:v>Q3</c:v></c:pt>
+          </c:strCache></c:strRef></c:cat>
+          <c:val><c:numRef><c:numCache><c:ptCount val="3"/>
+            <c:pt idx="0"><c:v>15</c:v></c:pt>
+            <c:pt idx="1"><c:v>60</c:v></c:pt>
+            <c:pt idx="2"><c:v>45</c:v></c:pt>
+          </c:numCache></c:numRef></c:val>
+        </c:ser>
+        <c:axId val="100"/><c:axId val="200"/>
+      </c:lineChart>
+      <c:catAx><c:axId val="100"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="b"/></c:catAx>
+      <c:valAx><c:axId val="200"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="l"/></c:valAx>
+    </c:plotArea>
+    <c:legend><c:legendPos val="b"/></c:legend>
+  </c:chart>
+</c:chartSpace>"#;
+    let doc = document(chart)?;
+    let page = &doc.pages[0];
+    let mut bars: Vec<_> = page
+        .elements
+        .iter()
+        .filter(|el| matches!(el.kind, ElementType::RECT) && el.fill == RED && el.height > 15.0)
+        .collect();
+    bars.sort_by(|a, b| a.transform[4].total_cmp(&b.transform[4]));
+    assert_eq!(bars.len(), 3, "Expected 3 column bars in combo chart");
+
+    let segments = data_segments(page, BLUE);
+    assert_eq!(segments.len(), 2, "Expected 2 line segments in combo chart");
+    // 每个折线拐点应精准落在对应柱状图槽位的水平中心线上
+    let line_xs = [segments[0][0].0, segments[0][1].0, segments[1][1].0];
+    for (bar, lx) in bars.iter().zip(line_xs) {
+        let bar_center = bar.transform[4] + bar.width * 0.5;
+        checks::near(lx, bar_center);
+    }
+    // 共享数值轴上限需至少容纳折线的 60，最高柱（30）顶部应位于最高折线点（60）下方
+    let peak_line_y = segments[0][1].1;
+    let tallest_bar_top = bars[2].transform[5];
+    assert!(
+        tallest_bar_top > peak_line_y + 20.0,
+        "Shared axis must scale to line max 60 instead of clipping line: bar_top={tallest_bar_top}, peak_line_y={peak_line_y}"
+    );
+    let labels = texts(page);
+    assert!(labels.iter().any(|t| t == "Sales"));
+    assert!(labels.iter().any(|t| t == "Target"));
+    Ok(())
+}
+
+#[test]
+fn combo_column_and_line_with_secondary_axis_renders_right_scale() -> TestResult {
+    let chart = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart>
+    <c:plotArea>
+      <c:barChart>
+        <c:barDir val="col"/><c:grouping val="clustered"/>
+        <c:ser>
+          <c:idx val="0"/><c:order val="0"/>
+          <c:tx><c:v>Volume</c:v></c:tx>
+          <c:spPr><a:solidFill><a:srgbClr val="C03050"/></a:solidFill></c:spPr>
+          <c:cat><c:strRef><c:strCache><c:ptCount val="3"/>
+            <c:pt idx="0"><c:v>Jan</c:v></c:pt>
+            <c:pt idx="1"><c:v>Feb</c:v></c:pt>
+            <c:pt idx="2"><c:v>Mar</c:v></c:pt>
+          </c:strCache></c:strRef></c:cat>
+          <c:val><c:numRef><c:numCache><c:ptCount val="3"/>
+            <c:pt idx="0"><c:v>10</c:v></c:pt>
+            <c:pt idx="1"><c:v>20</c:v></c:pt>
+            <c:pt idx="2"><c:v>40</c:v></c:pt>
+          </c:numCache></c:numRef></c:val>
+        </c:ser>
+        <c:axId val="100"/><c:axId val="200"/>
+      </c:barChart>
+      <c:lineChart>
+        <c:grouping val="standard"/>
+        <c:ser>
+          <c:idx val="1"/><c:order val="1"/>
+          <c:tx><c:v>Revenue</c:v></c:tx>
+          <c:spPr><a:ln w="19050"><a:solidFill><a:srgbClr val="2070C0"/></a:solidFill></a:ln></c:spPr>
+          <c:cat><c:strRef><c:strCache><c:ptCount val="3"/>
+            <c:pt idx="0"><c:v>Jan</c:v></c:pt>
+            <c:pt idx="1"><c:v>Feb</c:v></c:pt>
+            <c:pt idx="2"><c:v>Mar</c:v></c:pt>
+          </c:strCache></c:strRef></c:cat>
+          <c:val><c:numRef><c:numCache><c:ptCount val="3"/>
+            <c:pt idx="0"><c:v>200</c:v></c:pt>
+            <c:pt idx="1"><c:v>400</c:v></c:pt>
+            <c:pt idx="2"><c:v>300</c:v></c:pt>
+          </c:numCache></c:numRef></c:val>
+        </c:ser>
+        <c:axId val="101"/><c:axId val="201"/>
+      </c:lineChart>
+      <c:catAx><c:axId val="100"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="b"/></c:catAx>
+      <c:valAx><c:axId val="200"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="l"/></c:valAx>
+      <c:catAx><c:axId val="101"/><c:delete val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="t"/></c:catAx>
+      <c:valAx><c:axId val="201"/><c:scaling><c:orientation val="minMax"/><c:min val="0"/><c:max val="400"/></c:scaling><c:axPos val="r"/><c:numFmt formatCode="0" sourceLinked="0"/></c:valAx>
+    </c:plotArea>
+  </c:chart>
+</c:chartSpace>"#;
+    let doc = document(chart)?;
+    let page = &doc.pages[0];
+    let mut bars: Vec<_> = page
+        .elements
+        .iter()
+        .filter(|el| matches!(el.kind, ElementType::RECT) && el.fill == RED && el.height > 15.0)
+        .collect();
+    bars.sort_by(|a, b| a.transform[4].total_cmp(&b.transform[4]));
+    assert_eq!(bars.len(), 3);
+    let segments = data_segments(page, BLUE);
+    assert_eq!(segments.len(), 2);
+
+    // 主纵轴 40 的柱顶与次纵轴 400 的折线最高点应落在接近同一顶部水平位置（各自独立刻度缩放）
+    let bar_top_40 = bars[2].transform[5];
+    let line_peak_400 = segments[0][1].1;
+    assert!(
+        (bar_top_40 - line_peak_400).abs() < 6.0,
+        "Independent primary (40) and secondary (400) scales should peak near plot top: bar={bar_top_40}, line={line_peak_400}"
+    );
+    // 次纵轴刻度文本 "400" 应绘制在最右侧柱子之右
+    let last_bar_right = bars[2].transform[4] + bars[2].width;
+    let sec_tick_400 = page
+        .elements
+        .iter()
+        .find(|el| matches!(el.kind, ElementType::TEXT) && checks::text(&el.paragraphs) == "400")
+        .ok_or("Missing secondary y-axis label 400")?;
+    assert!(
+        sec_tick_400.transform[4] > last_bar_right,
+        "Secondary tick 400 should be right of bars: tick_x={}, bar_right={last_bar_right}",
+        sec_tick_400.transform[4]
+    );
+    Ok(())
+}
+
+#[test]
+fn combo_rejects_mixed_pie_or_horizontal_bar() -> TestResult {
+    let column_plus_pie = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart>
+    <c:plotArea>
+      <c:barChart><c:barDir val="col"/><c:grouping val="clustered"/>
+        <c:ser><c:idx val="0"/><c:order val="0"/>
+          <c:spPr><a:solidFill><a:srgbClr val="C03050"/></a:solidFill></c:spPr>
+          <c:val><c:numRef><c:numCache><c:ptCount val="2"/><c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>20</c:v></c:pt></c:numCache></c:numRef></c:val>
+        </c:ser>
+        <c:axId val="100"/><c:axId val="200"/>
+      </c:barChart>
+      <c:pieChart>
+        <c:ser><c:idx val="1"/><c:order val="1"/>
+          <c:val><c:numRef><c:numCache><c:ptCount val="2"/><c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>20</c:v></c:pt></c:numCache></c:numRef></c:val>
+        </c:ser>
+      </c:pieChart>
+      <c:catAx><c:axId val="100"/><c:scaling><c:orientation val="minMax"/></c:scaling></c:catAx>
+      <c:valAx><c:axId val="200"/><c:scaling><c:orientation val="minMax"/></c:scaling></c:valAx>
+    </c:plotArea>
+  </c:chart>
+</c:chartSpace>"#;
+    assert_omitted(column_plus_pie)?;
+
+    let hbar_plus_line = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <c:chart>
+    <c:plotArea>
+      <c:barChart><c:barDir val="bar"/><c:grouping val="clustered"/>
+        <c:ser><c:idx val="0"/><c:order val="0"/>
+          <c:spPr><a:solidFill><a:srgbClr val="C03050"/></a:solidFill></c:spPr>
+          <c:val><c:numRef><c:numCache><c:ptCount val="2"/><c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>20</c:v></c:pt></c:numCache></c:numRef></c:val>
+        </c:ser>
+        <c:axId val="100"/><c:axId val="200"/>
+      </c:barChart>
+      <c:lineChart><c:grouping val="standard"/>
+        <c:ser><c:idx val="1"/><c:order val="1"/>
+          <c:spPr><a:ln w="19050"><a:solidFill><a:srgbClr val="2070C0"/></a:solidFill></a:ln></c:spPr>
+          <c:val><c:numRef><c:numCache><c:ptCount val="2"/><c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>20</c:v></c:pt></c:numCache></c:numRef></c:val>
+        </c:ser>
+        <c:axId val="100"/><c:axId val="200"/>
+      </c:lineChart>
+      <c:catAx><c:axId val="100"/><c:scaling><c:orientation val="minMax"/></c:scaling></c:catAx>
+      <c:valAx><c:axId val="200"/><c:scaling><c:orientation val="minMax"/></c:scaling></c:valAx>
+    </c:plotArea>
+  </c:chart>
+</c:chartSpace>"#;
+    assert_omitted(hbar_plus_line)?;
+    Ok(())
+}
+
 fn area_chart() -> String {
     fixture::category_chart().replace("lineChart", "areaChart")
 }
