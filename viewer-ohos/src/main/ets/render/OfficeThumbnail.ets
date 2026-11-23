@@ -423,6 +423,23 @@ function renderXlsxThumbnail(
   }
   ctx.stroke();
 
+  // 浮动图表复用通用 Element 绘制；裁剪在正文区，避免覆盖缩略图表头。
+  const elements = sheet.elements ?? [];
+  if (elements.length > 0) {
+    ctx.save();
+    try {
+      ctx.beginPath();
+      ctx.rect(headerW, headerH, Math.max(0, previewW - headerW), Math.max(0, previewH - headerH));
+      ctx.clip();
+      ctx.translate(headerW, headerH);
+      for (const element of elements) {
+        CanvasElementDrawer.drawElement(ctx, element);
+      }
+    } finally {
+      ctx.restore();
+    }
+  }
+
   ctx.restore();
   return ctx.getPixelMap(0, 0, outW, outH);
 }

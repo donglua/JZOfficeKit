@@ -729,6 +729,7 @@ import { resolve } from 'node:path';
 const root = resolve(import.meta.dirname, '../..');
 const modelSource = readFileSync(resolve(root, 'viewer-ohos/src/main/ets/core/OfficeModel.ets'), 'utf8');
 const viewSource = readFileSync(resolve(root, 'viewer-ohos/src/main/ets/render/SpreadsheetView.ets'), 'utf8');
+const thumbnailSource = readFileSync(resolve(root, 'viewer-ohos/src/main/ets/render/OfficeThumbnail.ets'), 'utf8');
 
 checks++;
 if (!/readonly frozenRows\?: number;/.test(modelSource) || !/readonly frozenColumns\?: number;/.test(modelSource)) {
@@ -771,6 +772,39 @@ if (viewSource.includes('rows.first(unscaledFrozenBottom)')) {
 checks++;
 if (!/private nextMergeGen\(/.test(viewSource)) {
   throw new Error('缺少象限内合并单元格代际生成入口');
+}
+
+// 8. Sheet.elements：模型、四象限与独立缩略图必须同时接入通用 Element 绘制
+checks++;
+if (!/elements\?: Element\[\];/.test(modelSource)) {
+  throw new Error('OfficeModel.Sheet 缺少可选 elements 字段');
+}
+
+checks++;
+if (!viewSource.includes('this.drawSheetElements(ctx, sheet, quadrant, s);') ||
+  !viewSource.includes('ctx.translate(HEADER_WIDTH + quadrant.offsetX, HEADER_HEIGHT + quadrant.offsetY);') ||
+  !viewSource.includes('ctx.scale(s, s);') ||
+  !viewSource.includes('CanvasElementDrawer.drawElement(ctx, element);')) {
+  throw new Error('SpreadsheetView 未按冻结象限的 gutter / offset / scale 绘制 Sheet.elements');
+}
+
+checks++;
+if (!/private drawSheetElements\([\s\S]*?try \{[\s\S]*?\} finally \{\s*ctx\.restore\(\);/.test(viewSource)) {
+  throw new Error('SpreadsheetView 浮动元素绘制缺少 finally 状态恢复');
+}
+
+checks++;
+if (!thumbnailSource.includes('const elements = sheet.elements ?? [];') ||
+  !thumbnailSource.includes('ctx.rect(headerW, headerH, Math.max(0, previewW - headerW), Math.max(0, previewH - headerH));') ||
+  !thumbnailSource.includes('ctx.translate(headerW, headerH);') ||
+  !thumbnailSource.includes('CanvasElementDrawer.drawElement(ctx, element);')) {
+  throw new Error('OfficeThumbnail 未在正文 clip 内复用 Sheet.elements 绘制');
+}
+
+checks++;
+if (!viewSource.includes('SpreadsheetView.intersectsElementClip(element, clipLeft, clipTop, clipRight, clipBottom)') ||
+  !/private static intersectsElementClip\(/.test(viewSource)) {
+  throw new Error('SpreadsheetView 浮动元素缺少按当前象限裁剪区剔除离屏元素的逻辑');
 }
 
 console.log(`Sheet freeze checks passed: ${checks}`);

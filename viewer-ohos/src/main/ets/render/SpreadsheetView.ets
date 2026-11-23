@@ -1,6 +1,7 @@
 import { displaySync } from '@kit.ArkGraphics2D';
 import * as model from '../core/OfficeModel';
 import { RenderUtils } from './RenderUtils';
+import { CanvasElementDrawer } from './CanvasElementDrawer';
 import { cellIndentWidth, fittedCellFontSize } from './SheetTextStyle';
 import {
   EffectiveFrozen,
@@ -1811,7 +1812,75 @@ export struct SpreadsheetView {
       this.drawCellBorders(ctx, rect.x, rect.y, rect.x + rect.width, rect.y + rect.height, style);
     }
 
+    // 浮动图表与单元格共用同一数据区坐标；每个象限分别平移并由现有 clip 裁剪。
+    this.drawSheetElements(ctx, sheet, quadrant, s);
+
     ctx.restore();
+  }
+
+  /** 在当前冻结象限内复用通用 Element 绘制；表头与屏幕偏移不随 scale 放大。 */
+  private drawSheetElements(
+    ctx: CanvasRenderingContext2D,
+    sheet: model.Sheet,
+    quadrant: FreezeQuadrant,
+    s: number
+  ): void {
+    const elements = sheet.elements;
+    if (!elements || elements.length === 0) return;
+    const safeScale = s > 0 ? s : 1;
+    const clipLeft = (quadrant.clip.x - HEADER_WIDTH - quadrant.offsetX) / safeScale;
+    const clipTop = (quadrant.clip.y - HEADER_HEIGHT - quadrant.offsetY) / safeScale;
+    const clipRight = (quadrant.clip.x + quadrant.clip.width - HEADER_WIDTH - quadrant.offsetX) / safeScale;
+    const clipBottom = (quadrant.clip.y + quadrant.clip.height - HEADER_HEIGHT - quadrant.offsetY) / safeScale;
+    ctx.save();
+    try {
+      ctx.translate(HEADER_WIDTH + quadrant.offsetX, HEADER_HEIGHT + quadrant.offsetY);
+      ctx.scale(s, s);
+      for (const element of elements) {
+        if (!SpreadsheetView.intersectsElementClip(element, clipLeft, clipTop, clipRight, clipBottom)) {
+          continue;
+        }
+        CanvasElementDrawer.drawElement(ctx, element);
+      }
+    } finally {
+      ctx.restore();
+    }
+  }
+
+  /** 判断元素在数据区坐标下的外接矩形是否与当前象限可见裁剪区相交 */
+  private static intersectsElementClip(
+    element: model.Element,
+    clipLeft: number,
+    clipTop: number,
+    clipRight: number,
+    clipBottom: number
+  ): boolean {
+    const strokePad = ((element.stroke >>> 24) === 0) ? 0 : Math.max(0.5, element.strokeWidth || 1) / 2;
+    let x0 = -strokePad;
+    let y0 = -strokePad;
+    let x1 = Math.max(0, element.width) + strokePad;
+    let y1 = Math.max(0, element.height) + strokePad;
+    if (element.type === 'TEXT') {
+      const extraX = element.textWrap === false ? 256 : 16;
+      x0 -= extraX;
+      x1 += extraX;
+      y0 -= 64;
+      y1 += 64;
+    }
+    const m = element.transform;
+    let a = 1, b = 0, c = 0, d = 1, tx = element.x || 0, ty = element.y || 0;
+    if (m && m.length >= 6) {
+      a = m[0]; b = m[1]; c = m[2]; d = m[3]; tx = m[4]; ty = m[5];
+    }
+    const px0 = a * x0 + c * y0 + tx, py0 = b * x0 + d * y0 + ty;
+    const px1 = a * x1 + c * y0 + tx, py1 = b * x1 + d * y0 + ty;
+    const px2 = a * x0 + c * y1 + tx, py2 = b * x0 + d * y1 + ty;
+    const px3 = a * x1 + c * y1 + tx, py3 = b * x1 + d * y1 + ty;
+    const minX = Math.min(px0, px1, px2, px3);
+    const minY = Math.min(py0, py1, py2, py3);
+    const maxX = Math.max(px0, px1, px2, px3);
+    const maxY = Math.max(py0, py1, py2, py3);
+    return maxX > clipLeft && minX < clipRight && maxY > clipTop && minY < clipBottom;
   }
 
   /**

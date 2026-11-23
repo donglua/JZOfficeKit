@@ -1,5 +1,9 @@
 # 更新日志
 
+## Unreleased
+
+- **XLSX 内嵌图表**：复用 `core` 共享图表引擎输出的通用元素，在冻结四象限内完成图表绘制并支持滚动、缩放与缩略图；`Sheet.elements` 为可选字段，`schemaVersion` 保持 **9**。
+
 ## 0.17.0
 
 发布页面：[v0.17.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.17.0)。

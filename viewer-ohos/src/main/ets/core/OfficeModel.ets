@@ -159,6 +159,8 @@ export interface Sheet {
   columnWidths: number[];
   cells: Cell[];
   merges: CellRange[];
+  /** 工作表浮动图表的通用绘制元素；坐标为不含行列标头的数据区 point 坐标 */
+  elements?: Element[];
   /** 预计算的几何布局数据（core 输出，schemaVersion 9 新增可选字段） */
   geometry?: SheetGeometry;
   /**
