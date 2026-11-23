@@ -365,6 +365,10 @@ public struct OfficePreviewView: View {
                     let scaledW = contentSize.width * controller.zoom
                     let scaledH = contentSize.height * controller.zoom
                     let minContainerW = Self.minContainerWidth(for: viewportGeo.size.width, kind: doc.kind)
+                    let minContainerH = Self.minContainerHeight(for: viewportGeo.size.height, kind: doc.kind)
+                    let padding = Self.canvasPadding(for: doc.kind)
+                    let canvasW = Self.canvasFrameDimension(scaled: scaledW, viewport: viewportGeo.size.width, kind: doc.kind)
+                    let canvasH = Self.canvasFrameDimension(scaled: scaledH, viewport: viewportGeo.size.height, kind: doc.kind)
 
                     ScrollViewReader { scrollProxy in
                         ScrollView([.horizontal, .vertical], showsIndicators: true) {
@@ -387,7 +391,7 @@ public struct OfficePreviewView: View {
                                         controller.onPageScrollDetected(page: detectedPage)
                                     }
                                 )
-                                .frame(width: scaledW, height: scaledH)
+                                .frame(width: canvasW, height: canvasH)
 
                                 if doc.kind == .pptx {
                                     VStack(spacing: 16 * controller.zoom) {
@@ -401,9 +405,14 @@ public struct OfficePreviewView: View {
                                     .allowsHitTesting(false)
                                 }
                             }
-                            .frame(minWidth: minContainerW, alignment: .top)
-                            .padding(16)
+                            .frame(
+                                minWidth: doc.kind == .xlsx ? canvasW : minContainerW,
+                                minHeight: doc.kind == .xlsx ? canvasH : minContainerH,
+                                alignment: doc.kind == .xlsx ? .topLeading : .top
+                            )
+                            .padding(padding)
                         }
+                        .defaultScrollAnchor(.topLeading)
                         .onChange(of: controller.scrollRequest) { _, req in
                             if let req = req, doc.kind == .pptx, req.page >= 1 {
                                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -445,6 +454,23 @@ public struct OfficePreviewView: View {
         return floor(max(0, viewportWidth - 32))
     }
 
+    /// 计算文档画布在滚动视口中的最小容器高度：避免短文档/单页幻灯片/小表格在视口内被垂直居中
+    internal static func minContainerHeight(for viewportHeight: CGFloat, kind: OfficeKind) -> CGFloat {
+        let padding = canvasPadding(for: kind)
+        return floor(max(0, viewportHeight - padding * 2))
+    }
+
+    /// 画布外边距：DOCX/PPTX 保留 16pt 纸张留白，XLSX 行列标头贴合视口左上角不留外边距
+    internal static func canvasPadding(for kind: OfficeKind) -> CGFloat {
+        kind == .xlsx ? 0 : 16
+    }
+
+    /// 计算画布实际尺寸：XLSX 至少铺满视口避免右下留空或截断标头分隔线，DOCX/PPTX 保持文档物理尺寸
+    internal static func canvasFrameDimension(scaled: CGFloat, viewport: CGFloat, kind: OfficeKind) -> CGFloat {
+        guard kind == .xlsx else { return scaled }
+        return max(floor(max(0, viewport)), scaled)
+    }
+
     private func canvasContentSize(for doc: OfficeDocument) -> CGSize {
         switch doc.kind {
         case .pptx:
@@ -459,7 +485,7 @@ public struct OfficePreviewView: View {
             let idx = max(0, min(doc.sheets.count - 1, controller.currentPage - 1))
             guard idx < doc.sheets.count else { return CGSize(width: 800, height: 600) }
             let (_, _, totalW, totalH) = CGElementDrawer.computeSheetExtents(doc.sheets[idx])
-            return CGSize(width: max(600, totalW + 24), height: max(400, totalH + 24))
+            return CGSize(width: max(1, totalW + 24), height: max(1, totalH + 24))
         }
     }
 
@@ -749,16 +775,9 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     // MARK: - 视口监听与图片按需收集
 
     func updateVisibleAndPrefetchRects() -> (visible: CGRect, prefetch: CGRect)? {
-        let safeZoom = max(0.1, zoom)
-        let visible = visibleRect
-        guard visible.width > 0, visible.height > 0 else { return nil }
+        guard visibleRect.width > 0, visibleRect.height > 0 else { return nil }
 
-        let docVisible = CGRect(
-            x: visible.minX / safeZoom,
-            y: visible.minY / safeZoom,
-            width: visible.width / safeZoom,
-            height: visible.height / safeZoom
-        )
+        let docVisible = currentDocVisibleRect()
         let prefetch = docVisible.insetBy(dx: 0, dy: -docVisible.height * 0.75)
         return (docVisible, prefetch)
     }
@@ -912,38 +931,49 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
                 height: docRect.height * self.zoom
             )
             let clipBounds = clipView.bounds
-            let maxX = max(0, self.bounds.width - clipBounds.width)
-            let maxY = max(0, self.bounds.height - clipBounds.height)
+            let insets = self.enclosingScrollView?.contentInsets ?? NSEdgeInsets()
+            let insetLeft = max(0, insets.left)
+            let insetTop = max(0, insets.top)
+            let insetRight = max(0, insets.right)
+            let insetBottom = max(0, insets.bottom)
+            let visibleSize = CGSize(
+                width: max(1, clipBounds.width - insetLeft - insetRight),
+                height: max(1, clipBounds.height - insetTop - insetBottom)
+            )
+            let minX = -insetLeft
+            let minY = -insetTop
+            let maxX = max(minX, self.bounds.width - clipBounds.width + insetRight)
+            let maxY = max(minY, self.bounds.height - clipBounds.height + insetBottom)
             // 表格启用冻结窗格时按轴避让：命中冻结侧保持该轴滚动，避免目标被冻结区遮挡
             if let doc = self.document, doc.kind == .xlsx, self.zoom > 0 {
                 let index = max(0, min(doc.sheets.count - 1, self.currentPage - 1))
                 if index < doc.sheets.count {
                     let safeZoom = max(0.1, self.zoom)
                     let frozenViewport = CGRect(
-                        x: clipBounds.minX / safeZoom,
-                        y: clipBounds.minY / safeZoom,
-                        width: clipBounds.width / safeZoom,
-                        height: clipBounds.height / safeZoom
+                        x: (clipBounds.minX + insetLeft) / safeZoom,
+                        y: (clipBounds.minY + insetTop) / safeZoom,
+                        width: visibleSize.width / safeZoom,
+                        height: visibleSize.height / safeZoom
                     )
                     let plan = CGElementDrawer.sheetFreezePlan(sheet: doc.sheets[index], viewport: frozenViewport)
                     let target = CGElementDrawer.sheetScrollTarget(
                         docRect: docRect,
                         plan: plan,
-                        clipSize: clipBounds.size,
-                        contentOffset: clipBounds.origin,
+                        clipSize: visibleSize,
+                        contentOffset: CGPoint(x: clipBounds.minX + insetLeft, y: clipBounds.minY + insetTop),
                         contentSize: self.bounds.size,
                         zoom: self.zoom
                     )
-                    // 剩余偏移换算回文档坐标后交给滚动视图
-                    let resolvedX = min(max(0, target.x), maxX)
-                    let resolvedY = min(max(0, target.y), maxY)
+                    // 剩余偏移扣除滚动容器内边距后再交给 clipView
+                    let resolvedX = min(max(minX, target.x - insetLeft), maxX)
+                    let resolvedY = min(max(minY, target.y - insetTop), maxY)
                     clipView.animator().scroll(to: NSPoint(x: resolvedX, y: resolvedY))
                     self.enclosingScrollView?.reflectScrolledClipView(clipView)
                     return
                 }
             }
-            let targetX = min(max(0, viewRect.midX - clipBounds.width / 2), maxX)
-            let targetY = min(max(0, viewRect.midY - clipBounds.height / 2), maxY)
+            let targetX = min(max(minX, viewRect.midX - visibleSize.width / 2 - insetLeft), maxX)
+            let targetY = min(max(minY, viewRect.midY - visibleSize.height / 2 - insetTop), maxY)
             clipView.animator().scroll(to: NSPoint(x: targetX, y: targetY))
             self.enclosingScrollView?.reflectScrolledClipView(clipView)
         }
@@ -986,22 +1016,7 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
         ctx.scaleBy(x: zoom, y: zoom)
 
         let safeZoom = max(0.1, zoom)
-        let docVisible: CGRect
-        if visibleRect.width > 0, visibleRect.height > 0 {
-            docVisible = CGRect(
-                x: visibleRect.minX / safeZoom,
-                y: visibleRect.minY / safeZoom,
-                width: visibleRect.width / safeZoom,
-                height: visibleRect.height / safeZoom
-            )
-        } else {
-            docVisible = CGRect(
-                x: bounds.minX / safeZoom,
-                y: bounds.minY / safeZoom,
-                width: bounds.width / safeZoom,
-                height: bounds.height / safeZoom
-            )
-        }
+        let docVisible = currentDocVisibleRect()
         let activeImages = imageLoader?.snapshot ?? images
         // 表格冻结几何：正文绘制时确定，检索高亮复用同一份结果保证裁剪一致
         var xlsxFreezePlan: CGElementDrawer.SheetFreezePlan? = nil
@@ -1049,6 +1064,16 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
         case .xlsx:
             let idx = max(0, min(doc.sheets.count - 1, currentPage - 1))
             guard idx < doc.sheets.count else { return }
+            if visibleRect.width > 0, visibleRect.height > 0 {
+                // 先铺满含安全区内边距在内的可见区域，避免透明顶栏下方在滚动时露出未绘制底色
+                ctx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+                ctx.fill(CGRect(
+                    x: visibleRect.minX / safeZoom,
+                    y: visibleRect.minY / safeZoom,
+                    width: visibleRect.width / safeZoom,
+                    height: visibleRect.height / safeZoom
+                ))
+            }
             // 传入真实滚动视口：外围行列标头与冻结窗格据此固定在视口边缘
             let sheet = doc.sheets[idx]
             CGElementDrawer.drawSpreadsheet(
@@ -1288,28 +1313,39 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             frozenDataH: plan.frozenDataHeight,
             scrollDataX: plan.scrollX,
             scrollDataY: plan.scrollY,
-            viewX: viewPoint.x / safeZoom - docVisible.minX,
-            viewY: viewPoint.y / safeZoom - docVisible.minY,
+            // 必须减去与 drawSpreadsheet 一致的 clamp 后滚动量 plan.scrollX/Y；
+            // 当 visibleRect 带负偏移（居中、外边距或透明工具栏内边距）时，直接减 docVisible.minX/Y 会让命中整体偏移
+            viewX: viewPoint.x / safeZoom - plan.scrollX,
+            viewY: viewPoint.y / safeZoom - plan.scrollY,
             clampToBounds: clampToBounds
+        )
+    }
+
+    /// 扣除滚动容器安全区内边距（如统一工具栏顶栏占位）后的真实可见矩形
+    private func effectiveVisibleRect() -> NSRect {
+        let base = (visibleRect.width > 0 && visibleRect.height > 0) ? visibleRect : bounds
+        guard let insets = enclosingScrollView?.contentInsets else { return base }
+        let left = max(0, insets.left)
+        let top = max(0, insets.top)
+        let right = max(0, insets.right)
+        let bottom = max(0, insets.bottom)
+        return NSRect(
+            x: base.minX + left,
+            y: base.minY + top,
+            width: max(1, base.width - left - right),
+            height: max(1, base.height - top - bottom)
         )
     }
 
     /// 当前可见窗口在文档坐标系下的矩形（与 `draw(_:)` 里的 `docVisible` 同源）
     private func currentDocVisibleRect() -> CGRect {
         let safeZoom = max(0.1, zoom)
-        if visibleRect.width > 0, visibleRect.height > 0 {
-            return CGRect(
-                x: visibleRect.minX / safeZoom,
-                y: visibleRect.minY / safeZoom,
-                width: visibleRect.width / safeZoom,
-                height: visibleRect.height / safeZoom
-            )
-        }
+        let rect = effectiveVisibleRect()
         return CGRect(
-            x: bounds.minX / safeZoom,
-            y: bounds.minY / safeZoom,
-            width: bounds.width / safeZoom,
-            height: bounds.height / safeZoom
+            x: rect.minX / safeZoom,
+            y: rect.minY / safeZoom,
+            width: rect.width / safeZoom,
+            height: rect.height / safeZoom
         )
     }
 

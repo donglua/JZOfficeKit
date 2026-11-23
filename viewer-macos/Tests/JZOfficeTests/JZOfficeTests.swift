@@ -1372,11 +1372,23 @@ struct JZOfficeTests {
         #expect(footerFrame.height > 0 && footerFrame.height < 30)
         #expect(abs(footerFrame.midX - 595.0 / 2.0) < 1.0)
 
-        // 视口居中宽度辅助：DOCX/PPTX 返回视口净宽以居中窄页，XLSX 返回 0 保持左上对齐
+        // 视口居中宽度/高度与画布尺寸辅助：DOCX/PPTX 水平居中且顶对齐保留 16pt 外边距，XLSX 左上对齐铺满视口且无外边距
         #expect(OfficePreviewView.minContainerWidth(for: 920.6, kind: .docx) == 888)
         #expect(OfficePreviewView.minContainerWidth(for: 920.6, kind: .pptx) == 888)
         #expect(OfficePreviewView.minContainerWidth(for: 920.6, kind: .xlsx) == 0)
         #expect(OfficePreviewView.minContainerWidth(for: 16, kind: .docx) == 0)
+
+        #expect(OfficePreviewView.canvasPadding(for: .docx) == 16)
+        #expect(OfficePreviewView.canvasPadding(for: .pptx) == 16)
+        #expect(OfficePreviewView.canvasPadding(for: .xlsx) == 0)
+
+        #expect(OfficePreviewView.minContainerHeight(for: 640.8, kind: .docx) == 608)
+        #expect(OfficePreviewView.minContainerHeight(for: 640.8, kind: .pptx) == 608)
+        #expect(OfficePreviewView.minContainerHeight(for: 640.8, kind: .xlsx) == 640)
+
+        #expect(OfficePreviewView.canvasFrameDimension(scaled: 300, viewport: 900.7, kind: .xlsx) == 900)
+        #expect(OfficePreviewView.canvasFrameDimension(scaled: 1200, viewport: 900.7, kind: .xlsx) == 1200)
+        #expect(OfficePreviewView.canvasFrameDimension(scaled: 300, viewport: 900.7, kind: .docx) == 300)
     }
 
     // MARK: - XLSX 冻结窗格
@@ -3054,6 +3066,35 @@ struct JZOfficeTests {
         #expect(view.sheetCell(
             atViewPoint: CGPoint(x: 900, y: 900), docVisible: unrolled, clampToBounds: true
         ) == at(2, 2))
+
+        // 负原点可见矩形（居中留白、外边距或透明顶栏安全区内边距导致 visibleRect.minX/minY < 0）：
+        // 表格实际仍从画布 (0, 0) 绘制，命中换算必须按 clamp 后的 plan.scrollX/Y = 0 对齐，不能把负偏移加回触点
+        let negativeOrigin = CGRect(x: -200, y: -150, width: 1000, height: 600)
+        #expect(view.sheetCell(atViewPoint: CGPoint(x: 43, y: 23), docVisible: negativeOrigin, clampToBounds: false) == at(0, 0))
+        #expect(view.sheetCell(atViewPoint: CGPoint(x: 150, y: 45), docVisible: negativeOrigin, clampToBounds: false) == at(1, 1))
+        #expect(view.sheetCell(atViewPoint: CGPoint(x: 20, y: 23), docVisible: negativeOrigin, clampToBounds: false) == nil)
+        #expect(frozenView.sheetCell(atViewPoint: CGPoint(x: 50 * 2, y: 30 * 2), docVisible: negativeOrigin, clampToBounds: false) == at(0, 0))
+
+        // 真实 NSScrollView 带顶部统一工具栏内边距 (contentInsets.top = 52)：
+        // 未传 overrideDocVisible 时也应扣掉 top inset，在静止和向下滚动后都能精确命中目标格
+        let scrollView = NSScrollView(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsets(top: 52, left: 0, bottom: 0, right: 0)
+        let hostView = OfficeDocumentNSView(frame: CGRect(x: 0, y: 0, width: 400, height: 500))
+        hostView.setDocument(doc)
+        hostView.currentPage = 1
+        hostView.zoom = 1
+        scrollView.documentView = hostView
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: -52))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        #expect(hostView.sheetCell(atViewPoint: CGPoint(x: 43, y: 23), clampToBounds: false) == at(0, 0))
+        #expect(hostView.sheetCell(atViewPoint: CGPoint(x: 150, y: 45), clampToBounds: false) == at(1, 1))
+
+        // 向下滚动 40pt（origin.y = -12，有效滚动量 scrollY = 40）：
+        // 视口左上正文 (43, 63) 处于第 2 行第 0 列，必须命中 (2, 0)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: -12))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        #expect(hostView.sheetCell(atViewPoint: CGPoint(x: 43, y: 63), clampToBounds: false) == at(2, 0))
 
         // 视图状态默认值：无文档时不构造布局
         let empty = OfficeDocumentNSView()
