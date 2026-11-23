@@ -111,7 +111,12 @@ pub(super) fn parse(
             continue;
         };
         workbook.budget.elements(elements.len())?;
-        apply_extent(sheet, extent_plan, defaults.row_height, defaults.column_width);
+        apply_extent(
+            sheet,
+            extent_plan,
+            defaults.row_height,
+            defaults.column_width,
+        );
         for element in &mut elements {
             // 共享引擎输出图表局部坐标；Sheet 与 PPTX 一样通过 transform 平移到目标坐标系。
             element.x += frame.x;
@@ -175,7 +180,8 @@ fn resolve_frame(
             let to = marker(to)?;
             let rows = marker_len(from.row)?.max(marker_len(to.row)?);
             let columns = marker_len(from.column)?.max(marker_len(to.column)?);
-            let (x, y) = marker_position_readonly(sheet, from, default_row_height, default_column_width);
+            let (x, y) =
+                marker_position_readonly(sheet, from, default_row_height, default_column_width);
             let (right, bottom) =
                 marker_position_readonly(sheet, to, default_row_height, default_column_width);
             (
@@ -195,7 +201,8 @@ fn resolve_frame(
             let from = marker(from)?;
             let min_rows = marker_len(from.row)?;
             let min_columns = marker_len(from.column)?;
-            let (x, y) = marker_position_readonly(sheet, from, default_row_height, default_column_width);
+            let (x, y) =
+                marker_position_readonly(sheet, from, default_row_height, default_column_width);
             let (Some(width), Some(height)) =
                 (points(extent.attr("cx")), points(extent.attr("cy")))
             else {
@@ -390,7 +397,9 @@ fn apply_extent(
                 sheet.row_heights.resize(min_rows, default_row_height);
             }
             if sheet.column_widths.len() < min_columns {
-                sheet.column_widths.resize(min_columns, default_column_width);
+                sheet
+                    .column_widths
+                    .resize(min_columns, default_column_width);
             }
             let row_height = default_row_height.max(1.0);
             let column_width = default_column_width.max(1.0);

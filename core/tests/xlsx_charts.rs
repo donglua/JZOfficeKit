@@ -240,10 +240,9 @@ fn non_chart_drawings_warn_and_alternate_content_charts_render() -> TestResult {
 fn enforces_sheet_chart_count_and_workbook_element_budgets() -> TestResult {
     // 1) 单工作表超过 128 张图表必须拒绝
     let too_many_charts = drawing(&two_cell_anchor().repeat(129));
-    let err = parse_reader(Cursor::new(archive(&parts(&too_many_charts))?)).unwrap_err();
     assert!(matches!(
-        err,
-        Error::Limit("XLSX worksheet exceeds 128 charts")
+        parse_reader(Cursor::new(archive(&parts(&too_many_charts))?)),
+        Err(Error::Limit("XLSX worksheet exceeds 128 charts"))
     ));
 
     // 2) 工作簿级 5000 元素预算（多表累计）
@@ -263,15 +262,14 @@ fn enforces_sheet_chart_count_and_workbook_element_budgets() -> TestResult {
     let wb_idx = parts
         .iter()
         .position(|(n, _)| *n == "xl/workbook.xml")
-        .unwrap();
+        .ok_or("missing xl/workbook.xml")?;
     parts[wb_idx].1 = format!(
         r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>{sheets_xml}</sheets></workbook>"#
     )
     .into_bytes();
-    let err = parse_reader(Cursor::new(archive(&parts)?)).unwrap_err();
     assert!(matches!(
-        err,
-        Error::Limit("XLSX exceeds 5000 drawing elements")
+        parse_reader(Cursor::new(archive(&parts)?)),
+        Err(Error::Limit("XLSX exceeds 5000 drawing elements"))
     ));
     Ok(())
 }
