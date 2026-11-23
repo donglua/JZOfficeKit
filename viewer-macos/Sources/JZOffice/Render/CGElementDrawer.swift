@@ -2201,6 +2201,44 @@ public enum CGElementDrawer {
                 }
             }
         }
+
+        // 1.4 浮动图表：与单元格共用数据区 point 坐标，在每个冻结象限分别平移并继承象限 clip。
+        // 当前共享图表引擎只输出矢量与文字元素，无需图片缓存；元素 transform 已包含自身 x/y/flip。
+        if !sheet.elements.isEmpty {
+            let offsetX = sheetHeaderWidth + tx
+            let offsetY = sheetHeaderHeight + ty
+            let dataClip = clip.offsetBy(dx: -offsetX, dy: -offsetY)
+            ctx.saveGState()
+            ctx.translateBy(x: offsetX, y: offsetY)
+            for element in sheet.elements {
+                guard sheetElementBounds(element).intersects(dataClip) else { continue }
+                drawElement(in: ctx, element: element, images: [:])
+            }
+            ctx.restoreGState()
+        }
+    }
+
+    private static func sheetElementBounds(_ element: OfficeElement) -> CGRect {
+        let strokePad = (element.stroke >> 24) == 0 ? 0 : max(0.5, element.strokeWidth) / 2
+        var local = CGRect(
+            x: -strokePad,
+            y: -strokePad,
+            width: max(0, element.width) + strokePad * 2,
+            height: max(0, element.height) + strokePad * 2
+        )
+        if element.type == .text {
+            // macOS TEXT 元素不沿文本框高度硬裁剪，未换行文本也可能横溢；保留安全余量避免边缘标签被误剔除。
+            let extraX: CGFloat = element.textWrap ? 16 : 256
+            local = local.insetBy(dx: -extraX, dy: -64)
+        }
+        let affine: CGAffineTransform
+        if element.transform.count >= 6 {
+            let m = element.transform
+            affine = CGAffineTransform(a: m[0], b: m[1], c: m[2], d: m[3], tx: m[4], ty: m[5])
+        } else {
+            affine = CGAffineTransform(translationX: element.x, y: element.y)
+        }
+        return local.applying(affine)
     }
 
     /// 单行内要遍历的 cell 下标区间，未提供 rowStarts 时回退全表

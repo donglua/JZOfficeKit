@@ -1424,6 +1424,116 @@ struct JZOfficeTests {
         #expect(negative.frozenColumns == 0)
     }
 
+    @Test("XLSX 浮动元素解码并按冻结四象限平移绘制裁剪")
+    func sheetElementsDecodingAndQuadrantRendering() throws {
+        // 旧 core 不输出 elements 时必须回退为空数组；新字段沿用通用 Element 解码。
+        let plain = try freezeSheet()
+        #expect(plain.elements.isEmpty)
+        let decoded = try JSONDecoder().decode(OfficeSheet.self, from: """
+        {
+            "name": "Chart",
+            "rowHeights": [30],
+            "columnWidths": [60],
+            "cells": [],
+            "merges": [],
+            "elements": [{
+                "type": "RECT",
+                "x": 10,
+                "y": 5,
+                "width": 20,
+                "height": 10,
+                "transform": [1, 0, 0, 1, 10, 5],
+                "fill": 4294901760,
+                "stroke": 0
+            }]
+        }
+        """.data(using: .utf8)!)
+        #expect(decoded.elements.count == 1)
+        #expect(decoded.elements[0].type == .rect)
+        #expect(decoded.elements[0].x == 10 && decoded.elements[0].y == 5)
+        #expect(decoded.elements[0].transform == [1, 0, 0, 1, 10, 5])
+
+        func rectElement(_ x: CGFloat, _ y: CGFloat, _ fill: UInt32) -> OfficeElement {
+            OfficeElement(
+                type: .rect,
+                x: x,
+                y: y,
+                width: 20,
+                height: 10,
+                transform: [1, 0, 0, 1, x, y],
+                fill: fill,
+                stroke: 0
+            )
+        }
+        let sheet = OfficeSheet(
+            name: "ChartQuadrants",
+            rowHeights: Array(repeating: 30, count: 6),
+            columnWidths: Array(repeating: 60, count: 6),
+            cells: [],
+            merges: [],
+            elements: [
+                rectElement(10, 5, 0xffff0000),
+                rectElement(120, 5, 0xff00ff00),
+                rectElement(10, 60, 0xff0000ff),
+                rectElement(120, 60, 0xffffff00),
+                // 负向 y 翻转线段：校验 bounds 剔除正确处理负缩放矩阵且仍正常绘制。
+                OfficeElement(
+                    type: .line,
+                    x: 150,
+                    y: 70,
+                    width: 20,
+                    height: 10,
+                    transform: [1, 0, 0, -1, 150, 80],
+                    fill: 0,
+                    stroke: 0xff000000,
+                    strokeWidth: 4
+                ),
+                // 象限外元素：不得在视口内绘制。
+                rectElement(500, 500, 0xffff00ff)
+            ],
+            frozenRows: 1,
+            frozenColumns: 1
+        )
+
+        // 与单元格四象限测试使用同一滚动视口。元素矩阵已经包含数据区 x/y，
+        // 绘制层只应补 42/22 gutter 与各象限的冻结平移。
+        let viewport = CGRect(x: 60, y: 30, width: 200, height: 160)
+        let vpW = 200, vpH = 160
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        var bytes = [UInt8](repeating: 255, count: vpW * vpH * 4)
+        let ctx = CGContext(
+            data: &bytes,
+            width: vpW,
+            height: vpH,
+            bitsPerComponent: 8,
+            bytesPerRow: vpW * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        ctx.translateBy(x: 0, y: CGFloat(vpH))
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.translateBy(x: -viewport.minX, y: -viewport.minY)
+        CGElementDrawer.drawSpreadsheet(in: ctx, sheet: sheet, styles: [], viewport: viewport)
+
+        func pixelRGBA(_ x: Int, _ y: Int) -> (UInt8, UInt8, UInt8, UInt8) {
+            let idx = (y * vpW + x) * 4
+            return (bytes[idx], bytes[idx + 1], bytes[idx + 2], bytes[idx + 3])
+        }
+        func matchesRGB(_ p: (UInt8, UInt8, UInt8, UInt8), _ r: Int, _ g: Int, _ b: Int) -> Bool {
+            abs(Int(p.0) - r) <= 6 && abs(Int(p.1) - g) <= 6 && abs(Int(p.2) - b) <= 6
+        }
+
+        // 交叉角红、冻结行绿、冻结列蓝、滚动区黄，以及负缩放翻转线段中点黑。
+        #expect(matchesRGB(pixelRGBA(55, 30), 255, 0, 0))
+        #expect(matchesRGB(pixelRGBA(105, 30), 0, 255, 0))
+        #expect(matchesRGB(pixelRGBA(55, 55), 0, 0, 255))
+        #expect(matchesRGB(pixelRGBA(105, 55), 255, 255, 0))
+        #expect(matchesRGB(pixelRGBA(142, 67), 0, 0, 0))
+        // 新增元素不得越过正文 clip 覆盖行头与列头。
+        #expect(matchesRGB(pixelRGBA(150, 10), 0xf3, 0xf5, 0xf7))
+        #expect(matchesRGB(pixelRGBA(20, 100), 0xf3, 0xf5, 0xf7))
+    }
+
     @Test("冻结占比保护按轴独立降级")
     func sheetFreezeRatioProtection() {
         let viewport = CGRect(x: 0, y: 0, width: 400, height: 300)

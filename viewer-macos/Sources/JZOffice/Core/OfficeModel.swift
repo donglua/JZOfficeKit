@@ -601,6 +601,8 @@ public struct OfficeSheet: Codable, Sendable {
     public let columnWidths: [CGFloat]
     public let cells: [OfficeCell]
     public let merges: [OfficeCellRange]
+    /// 工作表浮动图表的通用绘制元素；坐标为不含行列标头的数据区 point 坐标
+    public let elements: [OfficeElement]
     public let geometry: OfficeSheetGeometry?
     /// 从第 0 行起冻结的行数（core schemaVersion 9 可选字段，缺省 0）
     public let frozenRows: Int
@@ -608,7 +610,7 @@ public struct OfficeSheet: Codable, Sendable {
     public let frozenColumns: Int
 
     enum CodingKeys: String, CodingKey {
-        case name, rowHeights, columnWidths, cells, merges, geometry, frozenRows, frozenColumns
+        case name, rowHeights, columnWidths, cells, merges, elements, geometry, frozenRows, frozenColumns
     }
 
     /// 逐字段构造，供单元测试直接拼装工作表（真实文档仍走下面的 `Codable` 解码路径）。
@@ -622,6 +624,7 @@ public struct OfficeSheet: Codable, Sendable {
         columnWidths: [CGFloat] = [],
         cells: [OfficeCell] = [],
         merges: [OfficeCellRange] = [],
+        elements: [OfficeElement] = [],
         geometry: OfficeSheetGeometry? = nil,
         frozenRows: Int = 0,
         frozenColumns: Int = 0
@@ -631,6 +634,7 @@ public struct OfficeSheet: Codable, Sendable {
         self.columnWidths = columnWidths
         self.cells = cells
         self.merges = merges
+        self.elements = elements
         self.geometry = geometry
         self.frozenRows = min(max(0, frozenRows), rowHeights.count)
         self.frozenColumns = min(max(0, frozenColumns), columnWidths.count)
@@ -646,6 +650,7 @@ public struct OfficeSheet: Codable, Sendable {
         self.columnWidths = columns
         self.cells = try c.decodeIfPresent([OfficeCell].self, forKey: .cells) ?? []
         self.merges = try c.decodeIfPresent([OfficeCellRange].self, forKey: .merges) ?? []
+        self.elements = try c.decodeIfPresent([OfficeElement].self, forKey: .elements) ?? []
         self.geometry = try c.decodeIfPresent(OfficeSheetGeometry.self, forKey: .geometry)
         let frozenRows = try c.decodeIfPresent(Int.self, forKey: .frozenRows) ?? 0
         let frozenColumns = try c.decodeIfPresent(Int.self, forKey: .frozenColumns) ?? 0
