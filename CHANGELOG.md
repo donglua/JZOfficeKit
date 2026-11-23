@@ -1,5 +1,10 @@
 # 更新日志
 
+## Unreleased
+
+- **XLSX 内嵌图表（`core` / Android / HarmonyOS NEXT / macOS）**：工作表 DrawingML 的 `twoCellAnchor`、`oneCellAnchor` 与 `absoluteAnchor` 图表统一复用跨格式共享图表引擎，按缓存数据绘制折线、面积、柱/条形、饼/环、散点与雷达图；保留主题色、标题、坐标轴、图例及完整翻转矩阵，并纳入冻结四象限、滚动、缩放与缩略图渲染。`Sheet.elements` 为可选字段，`schemaVersion` 保持 **9**；新增工作簿级 5000 个绘制元素预算，外部或缺失图表关系继续告警省略。
+- **测试**：新增 `core/tests/xlsx_charts.rs`，覆盖三类锚点、共享引擎标签与系列输出、滚动范围扩展、斜线翻转矩阵及缺失关系降级。
+
 ## 0.17.0
 
 发布页面：[v0.17.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.17.0)。
