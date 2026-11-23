@@ -16,6 +16,8 @@ final class SpreadsheetDocument {
         int frozenColumns;
         final List<Cell> cells = new ArrayList<>();
         final List<CellRange> merges = new ArrayList<>();
+        /** 工作表浮动图表的通用绘制元素；坐标与 transform 均不含行列标头偏移 */
+        final List<OfficeDocument.Element> elements = new ArrayList<>();
         /** 预计算的几何布局（来自 core），为 null 时由平台层现场计算（兼容旧 core） */
         Geometry geometry;
     }

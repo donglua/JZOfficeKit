@@ -8,6 +8,8 @@ import java.util.List;
 final class DocumentDecoder {
     /** 单个页眉/页脚部件的块数量上限，须与 core 的 MAX_SECTION_BLOCKS 保持一致 */
     private static final int MAX_SECTION_BLOCKS = 500;
+    /** 工作簿内所有工作表共享的浮动元素预算，须与 core 的 5000 元素上限一致 */
+    private static final int MAX_SHEET_ELEMENTS = 5000;
     /** 基本类型数组解码的初始容量，避免大数组场景的装箱分配 */
     private static final int GROWTH_INITIAL = 64;
 
@@ -20,6 +22,8 @@ final class DocumentDecoder {
             boolean hasWarnings = false, hasBlocks = false, hasPages = false, hasStyles = false, hasSheets = false;
             int schemaVersion = 0;
             List<RawSheet> rawSheets = new ArrayList<>();
+            // 在逐表校验前即累计，避免恶意 JSON 先构造出远超预算的对象图。
+            int[] sheetElementCount = new int[1];
             c.beginObject();
             while (c.hasNext()) {
                 String key = c.nextName();
@@ -67,7 +71,7 @@ final class DocumentDecoder {
                         c.beginArray();
                         while (c.hasNext()) {
                             if (rawSheets.size() >= 32) throw new IllegalArgumentException("Too many sheets");
-                            rawSheets.add(rawSheet(c));
+                            rawSheets.add(rawSheet(c, sheetElementCount));
                         }
                         c.endArray();
                         hasSheets = true;
@@ -290,7 +294,7 @@ final class DocumentDecoder {
         boolean hasName, hasRows, hasCols, hasCells, hasMerges;
     }
 
-    private static RawSheet rawSheet(Cursor c) {
+    private static RawSheet rawSheet(Cursor c, int[] sheetElementCount) {
         RawSheet raw = new RawSheet();
         SpreadsheetDocument.Sheet sheet = raw.sheet;
         c.beginObject();
@@ -318,6 +322,17 @@ final class DocumentDecoder {
                     }
                     c.endArray();
                     raw.hasMerges = true;
+                    break;
+                case "elements":
+                    c.beginArray();
+                    while (c.hasNext()) {
+                        if (sheetElementCount[0] >= MAX_SHEET_ELEMENTS) {
+                            throw new IllegalArgumentException("Too many spreadsheet drawing elements");
+                        }
+                        sheet.elements.add(element(c));
+                        sheetElementCount[0]++;
+                    }
+                    c.endArray();
                     break;
                 case "geometry":
                     sheet.geometry = rawGeometry(c);
@@ -521,11 +536,21 @@ final class DocumentDecoder {
                 }
             }
         }
+        for (OfficeDocument.Element element : sheet.elements) validateSheetElement(element);
         if (sheet.geometry != null) validateGeometry(sheet);
         // 冻结行列数按表维度钳位，越界输入退化为整表冻结而不是报错
         sheet.frozenRows = Math.min(sheet.frozenRows, rowLimit);
         sheet.frozenColumns = Math.min(sheet.frozenColumns, colLimit);
         return sheet;
+    }
+
+    /** 浮动元素直接进入 Canvas 矩阵与裁剪计算，拒绝 float 溢出及反向尺寸。 */
+    private static void validateSheetElement(OfficeDocument.Element element) {
+        if (!Float.isFinite(element.x) || !Float.isFinite(element.y)
+            || !Float.isFinite(element.width) || !Float.isFinite(element.height)
+            || element.width < 0 || element.height < 0) {
+            throw new IllegalArgumentException("Invalid spreadsheet drawing element geometry");
+        }
     }
 
     /**

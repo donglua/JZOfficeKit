@@ -51,6 +51,10 @@ final class SheetRenderer {
     private final RectF cellBounds = new RectF();
     private final RectF body = new RectF();
     private final RectF shiftedBounds = new RectF();
+    private final RectF elementBounds = new RectF();
+    /** 工作表浮动元素复用通用元素排版与绘制，状态不与单元格 Paint 混用 */
+    private final OfficeRenderer drawingRenderer = new OfficeRenderer();
+    private final List<OfficeRenderer.Element> drawingElements = new ArrayList<>();
     /** 当前帧的冻结几何，draw 计算出后供各绘制阶段与外部高亮避让复用 */
     private FreezePlan plan;
     /** 当前选区（供行列标头联动高亮使用）；由 {@link #setSelection} 由外部同步 */
@@ -86,6 +90,7 @@ final class SheetRenderer {
         sheet = null; styles = Collections.emptyList(); rows = columns = null;
         layout = null; width = height = 0;
         merges.clear(); visibleMerges.clear(); layouts.clear(); layoutCost = 0;
+        drawingElements.clear(); drawingRenderer.clear();
         mergeBuckets = null; plan = null; selection = null;
     }
 
@@ -119,6 +124,10 @@ final class SheetRenderer {
             }
         }
         mergeBuckets = buckets;
+        // core 已烘焙 frame 平移与 flip；非流式排版只消费 transform，不再补 source.x/y。
+        for (OfficeDocument.Element source : selected.elements) {
+            drawingElements.add(drawingRenderer.element(source, source.width, false, null));
+        }
     }
 
     void draw(Canvas canvas, RectF viewport) {
@@ -210,7 +219,7 @@ final class SheetRenderer {
 
     /**
      * 绘制单个象限：save -> clipRect -> 填充白底 -> 普通单元格 -> 网格线 ->
-     * 相交合并单元格 -> 单元格边框 -> restore。
+     * 相交合并单元格 -> 单元格边框 -> 浮动元素 -> restore。
      */
     private void drawQuadrant(Canvas canvas, Quadrant quadrant) {
         if (quadrant.isEmpty()) return;
@@ -229,7 +238,26 @@ final class SheetRenderer {
             shifted(merge, quadrant, shiftedBounds);
             drawBorders(canvas, shiftedBounds, style(merge.anchor));
         }
+        drawDrawingElements(canvas, quadrant);
         canvas.restoreToCount(quadrantSave);
+    }
+
+    /** 浮动元素使用数据区坐标，只补一次表头与当前冻结象限平移，并由象限 clip 限制漏色。 */
+    private void drawDrawingElements(Canvas canvas, Quadrant quadrant) {
+        if (drawingElements.isEmpty()) return;
+        float offsetX = HEADER_WIDTH + quadrant.translateX;
+        float offsetY = HEADER_HEIGHT + quadrant.translateY;
+        int save = canvas.save();
+        canvas.translate(offsetX, offsetY);
+        for (OfficeRenderer.Element element : drawingElements) {
+            elementBounds.set(element.bounds);
+            elementBounds.offset(offsetX, offsetY);
+            if (elementBounds.right <= quadrant.clipLeft || elementBounds.left >= quadrant.clipRight
+                || elementBounds.bottom <= quadrant.clipTop || elementBounds.top >= quadrant.clipBottom) continue;
+            // 当前共享图表引擎不输出 IMAGE；未来支持图片元素时需接入 XLSX 图片预算与生命周期。
+            drawingRenderer.drawElement(canvas, element, Collections.emptyMap());
+        }
+        canvas.restoreToCount(save);
     }
 
     /** 合并区域平移到象限坐标系后的边界 */

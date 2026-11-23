@@ -8,6 +8,7 @@ public final class DocumentDecoderChecks {
 
     public static void main(String[] args) throws Exception {
         checkSpreadsheetDecodeAndValidation();
+        checkSheetDrawingElements();
         checkPptxAndDocxWithOmittedFields();
         checkTypographyAndStyleFields();
         checkFloatingWrapFields();
@@ -336,6 +337,7 @@ public final class DocumentDecoderChecks {
         style.wrap = true;
         check(style.borders[0] != null && style.borders[0] == 0xff0000ff && style.borders[1] == null, "borders decoded");
         check(sheet.merges.get(0).endRow == 2 && sheet.merges.get(0).endColumn == 2, "merge decoded");
+        check(sheet.elements.isEmpty(), "omitted sheet drawing elements default to empty");
 
         reject(json.replace("\"schemaVersion\":9", "\"schemaVersion\":8"), "Unsupported core model version", "schema 8");
         reject(json.replace("\"schemaVersion\":9,", ""), "Invalid core display model", "missing schemaVersion");
@@ -361,6 +363,63 @@ public final class DocumentDecoderChecks {
             "Invalid core display model", "negative frozen rows");
         reject(json.replace("\"merges\":[", "\"frozenColumns\":0.5,\"merges\":["),
             "Invalid core display model", "fractional frozen columns");
+    }
+
+    /** 最小工作表浮动元素，transform 已与 core 一样包含 x/y 平移。 */
+    private static String sheetDrawingElement() {
+        return "{\"type\":\"RECT\",\"x\":10,\"y\":20,\"width\":100,\"height\":50,\"padding\":0,"
+            + "\"transform\":[1,0,0,1,10,20],\"fill\":4278190080,\"stroke\":0,\"strokeWidth\":1,"
+            + "\"verticalAlignment\":\"TOP\",\"textWrap\":true}";
+    }
+
+    /** 构造带指定元素数量的工作簿，用于验证预算是跨工作表累计而非逐表重置。 */
+    private static String workbookWithSheetElements(int... counts) {
+        StringBuilder json = new StringBuilder("{\"schemaVersion\":9,\"kind\":\"XLSX\",\"width\":1,"
+            + "\"warnings\":[],\"blocks\":[],\"pages\":[],\"cellStyles\":[{\"fontSize\":11,"
+            + "\"bold\":false,\"italic\":false,\"underline\":false,\"color\":0,\"fill\":0,"
+            + "\"alignment\":3,\"verticalAlignment\":\"BOTTOM\",\"wrap\":false,"
+            + "\"borders\":[null,null,null,null]}],\"sheets\":[");
+        for (int sheet = 0; sheet < counts.length; sheet++) {
+            if (sheet > 0) json.append(',');
+            json.append("{\"name\":\"S").append(sheet).append("\",\"rowHeights\":[20],"
+                + "\"columnWidths\":[20],\"cells\":[],\"merges\":[],\"elements\":[");
+            for (int element = 0; element < counts[sheet]; element++) {
+                if (element > 0) json.append(',');
+                json.append(sheetDrawingElement());
+            }
+            json.append("]}");
+        }
+        return json.append("]}").toString();
+    }
+
+    private static void checkSheetDrawingElements() throws Exception {
+        OfficeDocument decoded = DocumentDecoder.decode(workbookWithSheetElements(1));
+        SpreadsheetDocument.Sheet sheet = decoded.sheets.get(0);
+        check(sheet.elements.size() == 1, "sheet drawing element decoded");
+        OfficeDocument.Element element = sheet.elements.get(0);
+        check(element.type == OfficeDocument.Type.RECT && element.x == 10 && element.y == 20,
+            "sheet drawing coordinates decoded");
+        check(Arrays.equals(element.transform, new float[] {1, 0, 0, 1, 10, 20}),
+            "sheet drawing baked transform retained");
+        check(DocumentDecoder.decode(workbookWithSheetElements(0)).sheets.get(0).elements.isEmpty(),
+            "explicit empty sheet drawing elements accepted");
+
+        reject(workbookWithSheetElements(1).replace("\"width\":100", "\"width\":-1"),
+            "Invalid core display model", "negative sheet drawing width");
+        reject(workbookWithSheetElements(1).replace("\"height\":50", "\"height\":-1"),
+            "Invalid core display model", "negative sheet drawing height");
+        reject(workbookWithSheetElements(1).replace("\"x\":10", "\"x\":1e100"),
+            "Invalid core display model", "sheet drawing x overflows float");
+        reject(workbookWithSheetElements(1).replace("\"y\":20", "\"y\":1e100"),
+            "Invalid core display model", "sheet drawing y overflows float");
+        reject(workbookWithSheetElements(1).replace("\"transform\"", "\"transformX\""),
+            "Invalid core display model", "sheet drawing missing required transform");
+
+        OfficeDocument boundary = DocumentDecoder.decode(workbookWithSheetElements(2500, 2500));
+        check(boundary.sheets.get(0).elements.size() == 2500
+            && boundary.sheets.get(1).elements.size() == 2500, "5000 workbook drawing elements accepted");
+        reject(workbookWithSheetElements(2500, 2501),
+            "Invalid core display model", "5001 workbook drawing elements rejected");
     }
 
     private static void checkPptxAndDocxWithOmittedFields() throws Exception {

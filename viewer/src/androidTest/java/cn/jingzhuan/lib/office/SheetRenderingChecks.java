@@ -11,6 +11,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -35,6 +36,8 @@ final class SheetRenderingChecks {
         log.append("PASS visible-only layout, bounded cache, sheet replacement and clear\n");
         checkFreezePanes();
         log.append("PASS frozen rows/columns stay locked under scroll, freeze divider, cross-boundary merges and 75% viewport degradation\n");
+        checkDrawingElements();
+        log.append("PASS shared sheet element layout, header offsets, frozen quadrant transforms and clipping\n");
         log.append(SheetTextChecks.run());
         return log.append("SHEET RENDERING CHECKS PASSED\n").toString();
     }
@@ -392,6 +395,88 @@ final class SheetRenderingChecks {
             }
         }
         return false;
+    }
+
+    /** 通用 Sheet.elements：验证文本排版、表头偏移以及冻结四象限各自的平移与裁剪。 */
+    private static void checkDrawingElements() throws Exception {
+        SpreadsheetDocument.Sheet plain = new SpreadsheetDocument.Sheet();
+        plain.rowHeights = new float[] {30, 30, 30, 30};
+        plain.columnWidths = new float[] {80, 80, 80, 80};
+        plain.elements.add(drawingRectangle(8, 6, 20, 10, Color.BLUE));
+        plain.elements.add(drawingText(8, 20, 60, 20, "CHART"));
+        SheetRenderer renderer = new SheetRenderer();
+        renderer.setSheet(plain, Collections.singletonList(new SpreadsheetDocument.CellStyle()));
+        Bitmap bitmap = render(renderer, new RectF(0, 0, 200, 150));
+        try {
+            // 数据区 (8,6) 加表头 (42,20) 后位于文档 (50,26)，不是 (8,6)。
+            assertColor(bitmap, 60, 31, Color.BLUE, 0, "Shared rectangle includes row and column gutters once");
+            check(!ink(bitmap, 50, 40, 110, 62).isEmpty(), "Shared TEXT element uses OfficeRenderer text layout");
+            assertColor(bitmap, 10, 10, 0xfff3f5f7, 0, "Shared elements do not paint over pinned headers");
+        } finally { bitmap.recycle(); }
+
+        // 直接走真实 XLSX 缩略图入口，确认其复用 SheetRenderer 后无需额外图表分支。
+        OfficeDocument thumbnailDocument = new OfficeDocument();
+        thumbnailDocument.kind = OfficeDocument.Kind.XLSX;
+        thumbnailDocument.cellStyles.add(new SpreadsheetDocument.CellStyle());
+        thumbnailDocument.sheets.add(plain);
+        Method renderThumbnail = OfficeThumbnail.class.getDeclaredMethod("renderXlsxThumbnail",
+            OfficeDocument.class, int.class, int.class);
+        renderThumbnail.setAccessible(true);
+        Bitmap thumbnail = (Bitmap) renderThumbnail.invoke(null, thumbnailDocument, 200, 150);
+        try {
+            float scale = Math.min(200f / renderer.width, 150f / renderer.height);
+            assertColor(thumbnail, Math.round(60 * scale), Math.round(31 * scale), Color.BLUE, 0,
+                "XLSX thumbnail automatically includes shared drawing elements");
+        } finally { thumbnail.recycle(); }
+
+        SpreadsheetDocument.Sheet frozen = new SpreadsheetDocument.Sheet();
+        frozen.rowHeights = plain.rowHeights.clone(); frozen.columnWidths = plain.columnWidths.clone();
+        frozen.frozenRows = 1; frozen.frozenColumns = 1;
+        frozen.elements.add(drawingRectangle(0, 0, 80, 30, Color.RED));
+        frozen.elements.add(drawingRectangle(40, 15, 120, 120, Color.MAGENTA));
+        // 若未按滚动象限裁剪，该蓝色矩形会错误覆盖冻结交叉角中的 (82,30)。
+        frozen.elements.add(drawingRectangle(100, 50, 20, 20, Color.BLUE));
+        renderer.setSheet(frozen, Collections.singletonList(new SpreadsheetDocument.CellStyle()));
+        RectF viewport = new RectF(60, 40, 260, 200);
+        bitmap = render(renderer, viewport);
+        try {
+            assertColor(bitmap, 45, 22, Color.RED, 0, "Frozen corner element remains pinned");
+            assertColor(bitmap, 82, 35, Color.MAGENTA, 0, "Cross-boundary element clips to frozen corner");
+            assertColor(bitmap, 130, 35, Color.MAGENTA, 0, "Cross-boundary element clips to frozen row");
+            assertColor(bitmap, 82, 60, Color.MAGENTA, 0, "Cross-boundary element clips to frozen column");
+            assertColor(bitmap, 130, 60, Color.MAGENTA, 0, "Cross-boundary element clips to scrolling body");
+            assertColor(bitmap, 82, 30, Color.MAGENTA, 0, "Scrolling-only element cannot leak into frozen corner");
+        } finally { bitmap.recycle(); }
+
+        SpreadsheetDocument.Sheet unfrozen = new SpreadsheetDocument.Sheet();
+        unfrozen.rowHeights = plain.rowHeights.clone(); unfrozen.columnWidths = plain.columnWidths.clone();
+        unfrozen.elements.add(drawingRectangle(0, 0, 80, 30, Color.RED));
+        renderer.setSheet(unfrozen, Collections.singletonList(new SpreadsheetDocument.CellStyle()));
+        bitmap = render(renderer, viewport);
+        try {
+            check(!hasColorNear(bitmap, 45, 22, Color.RED, 40),
+                "Unfrozen shared element scrolls away instead of staying pinned");
+        } finally { bitmap.recycle(); }
+    }
+
+    private static OfficeDocument.Element drawingRectangle(float x, float y, float width, float height, int color) {
+        OfficeDocument.Element element = new OfficeDocument.Element();
+        element.type = OfficeDocument.Type.RECT;
+        element.x = x; element.y = y; element.width = width; element.height = height;
+        element.transform = new float[] {1, 0, 0, 1, x, y};
+        element.padding = 0; element.fill = color; element.stroke = 0;
+        return element;
+    }
+
+    private static OfficeDocument.Element drawingText(float x, float y, float width, float height, String text) {
+        OfficeDocument.Element element = drawingRectangle(x, y, width, height, 0);
+        element.type = OfficeDocument.Type.TEXT;
+        OfficeDocument.Paragraph paragraph = new OfficeDocument.Paragraph();
+        paragraph.after = 0;
+        OfficeDocument.Run run = new OfficeDocument.Run();
+        run.text = text; run.size = 12; run.color = Color.BLACK;
+        paragraph.runs.add(run); element.paragraphs.add(paragraph);
+        return element;
     }
 
     private static SpreadsheetDocument.Cell cell(int row, int column, String text, int style) {

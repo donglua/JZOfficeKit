@@ -163,7 +163,7 @@ final class OfficeRenderer {
         return low;
     }
 
-    private Element element(OfficeDocument.Element source, float available, boolean flow, OfficeDocument document) {
+    Element element(OfficeDocument.Element source, float available, boolean flow, OfficeDocument document) {
         return element(source, available, flow, document, 0f, 0f, null);
     }
 
@@ -327,7 +327,7 @@ final class OfficeRenderer {
                 }
             }
             if (flow) d.height = Math.max(1, y);
-            else if (y > d.height) document.warn("Table content exceeds its slide bounds and is clipped");
+            else if (y > d.height && document != null) document.warn("Table content exceeds its slide bounds and is clipped");
         } else if (!source.paragraphs.isEmpty()) {
             boolean fixedBox = !flow || fixedShape || (floating && source.width > 0 && source.height > 0);
             float padding = fixedBox ? Math.max(0, source.padding) : 0;
@@ -337,7 +337,7 @@ final class OfficeRenderer {
                 Math.max(1, d.width - 2 * padding), d.texts, !flow, !fixedBox || source.textWrap, localObstacles) + padding;
             if (!fixedBox) d.height = Math.max(1, textHeight);
             else {
-                if (!flow && textHeight > d.height + 1) document.warn("Text exceeds its slide box and is clipped");
+                if (!flow && textHeight > d.height + 1 && document != null) document.warn("Text exceeds its slide box and is clipped");
                 if (flow && source.height <= 0) d.height = Math.max(1, textHeight);
                 float remaining = Math.max(0, d.height - textHeight);
                 float offset = source.verticalAlignment == OfficeDocument.VerticalAlignment.CENTER ? remaining / 2
@@ -535,7 +535,7 @@ final class OfficeRenderer {
         }
     }
 
-    private void drawElement(Canvas canvas, Element d, Map<String, Bitmap> images) {
+    void drawElement(Canvas canvas, Element d, Map<String, Bitmap> images) {
         OfficeDocument.Element e = d.source;
         canvas.save(); canvas.concat(d.transform);
         drawRect.set(0, 0, d.width, d.height);
