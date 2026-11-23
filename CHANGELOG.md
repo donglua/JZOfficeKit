@@ -1,9 +1,37 @@
 # 更新日志
 
-## Unreleased
+## 0.18.0
 
-- **XLSX 内嵌图表（`core` / Android / HarmonyOS NEXT / macOS）**：工作表 DrawingML 的 `twoCellAnchor`、`oneCellAnchor` 与 `absoluteAnchor` 图表统一复用跨格式共享图表引擎，按缓存数据绘制折线、面积、柱/条形、饼/环、散点与雷达图；保留主题色、标题、坐标轴、图例及完整翻转矩阵，并纳入冻结四象限、滚动、缩放与缩略图渲染。`Sheet.elements` 为可选字段，`schemaVersion` 保持 **9**；新增工作簿级 5000 个绘制元素预算，外部或缺失图表关系继续告警省略。
-- **测试**：新增 `core/tests/xlsx_charts.rs`，覆盖三类锚点、共享引擎标签与系列输出、滚动范围扩展、斜线翻转矩阵及缺失关系降级。
+发布页面：[v0.18.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.18.0)。
+
+本版本提取并重构跨文档格式共享的 OOXML 图表引擎（`core/src/chart.rs`），新增 DOCX 与 XLSX 内嵌图表（XLSX 覆盖 `core` / Android / HarmonyOS NEXT / macOS 全端绘制）、PPTX 堆叠/百分比堆叠图表、3D 图表 2D 扁平化、组合图与次坐标轴、散点图与雷达图、基础数据标签、`dPt` 点样式与图例自适应布局，同时新增 PPTX SmartArt 缓存图形渲染、嵌入式 OLE 对象缓存预览图、`mc:AlternateContent` 分支解包，并修复 macOS 字体预检导致的 CI 卡死问题，`schemaVersion` 保持 **9** 不变。
+
+### 排版与特性
+
+- **共享图表引擎与多格式图表接入（`core` / Android / HarmonyOS NEXT / macOS）**：
+  - **跨格式图表引擎（`core/src/chart.rs`）**：将图表解析与绘制从 PPTX 抽离为跨文档共享引擎，统一输出局部坐标 `Element` 列表供各格式复用。
+  - **DOCX 内嵌图表（`core`）**：支持 `<wp:inline>` 与 `<wp:anchor>` 中的图表引用（含页眉/页脚），按正文内容边距与浮动布局平移绘制，缺失或外部图表部件自动告警省略。
+  - **XLSX 内嵌图表（`core` / Android / HarmonyOS NEXT / macOS）**：解析工作表 DrawingML 的 `twoCellAnchor`、`oneCellAnchor` 与 `absoluteAnchor` 图表并扩展工作表滚动范围；`Sheet.elements` 为可选字段，`schemaVersion` 保持 **9**；新增单表 128 张图表与工作簿级 5,000 个绘制元素预算；Android（`viewer`）、HarmonyOS NEXT（`viewer-ohos`）与 macOS（`viewer-macos`）同步实现冻结四象限裁剪、滚动、缩放与缩略图内嵌图表渲染。
+- **图表类型与元素扩展（`core`）**：
+  - **堆叠与百分比堆叠**：支持 `barChart`（柱状/横向条形）、`lineChart` 与 `areaChart` 的 `stacked` 与 `percentStacked` 分组，分离正负堆叠方向并按分类归一化占比。
+  - **组合图与次坐标轴**：支持同一绘图区混合多组图表并按 `axId` 关联主/次数值轴（右轴刻度独立绘制）；拦截饼图或横向条形图等不兼容混搭组合。
+  - **散点图与雷达图**：新增 `scatterChart`（散点、折线与标记点，带双数值轴）与 `radarChart`（标准、标记点与填充多边形样式，带径向网格与分类轴）。
+  - **3D 图表扁平化、数据标签与图例/点样式**：支持 `bar3DChart`、`line3DChart`、`area3DChart`、`pie3DChart` 扁平化为 2D 渲染（含可选系列轴与提示）；支持饼图、柱/条形图与折线图基础数据标签（含系列级/点级 `delete` 隐藏）；支持上/下/左/右图例位置自适应收缩绘图区，并支持柱/条形与散点图 `<c:dPt>` 单点填充/描边样式覆盖。
+- **PPTX 兼容性扩展（`core`）**：
+  - **SmartArt 缓存图形渲染**：新增 `core/src/pptx/diagram.rs` 解析关联的 `diagramDrawing` 部件（`<dsp:spTree>`），按外层 `graphicFrame` 几何框映射坐标并复用常规形状/文本/图片管线绘制（不重算布局并附带提示）。
+  - **嵌入式 OLE 对象预览图**：提取并绘制 `<p:oleObj>` 缓存预览图，减少无谓未支持告警。
+  - **`mc:AlternateContent` 解包**：在形状树、组合形状、文本 `Run` 与未支持项检查中按 OOXML Markup Compatibility 规则择优选择受支持的 `mc:Choice` 分支或回退到 `mc:Fallback`。
+
+### 测试
+
+- 新增 `core/tests/docx_charts.rs`（3 项用例）、`core/tests/xlsx_charts.rs`（7 项用例）与 `core/tests/pptx_diagram.rs`（3 项用例），并扩展 `core/tests/pptx_charts.rs`（共 34 项用例）与 `core/tests/pptx_drawing.rs`（共 10 项用例），覆盖跨格式图表引擎、多类图表与预算限制、SmartArt 缓存绘图、OLE 预览图及 `mc:AlternateContent` 分支选择。
+- 扩展 Android `scripts/tests/DocumentDecoderChecks.java`（162 → **174** 项断言）与设备端 `SheetRenderingChecks.java`、HarmonyOS `scripts/tests/SheetFreezeChecks.ts`（**162** 项检查）以及 macOS `JZOfficeTests.swift`（共 **48** 项测试），校验 `Sheet.elements` 解码、预算边界与四象限/缩略图绘制裁剪。
+
+### 细节修复与文档
+
+- **macOS 字体预检优化（`viewer-macos`）**：在调用 `NSFont(name:)` 前先对照已安装字体家族/PostScript 索引过滤，避免 macOS CI 在缺失字体回退查找时卡死。
+- **Clippy 与格式修正（`core`）**：规范 `core/src/xlsx/drawing.rs` 代码格式，并将 `core/tests/xlsx_charts.rs` 中的 `unwrap` / `unwrap_err` 替换为显式错误处理以通过 workspace `clippy` 严检。
+- **文档更新**：同步更新 `README.md`、`README.en.md` 与 `viewer-ohos/README.md` 的支持范围、能力限制与产物体积。
 
 ## 0.17.0
 

@@ -6,22 +6,22 @@ A lightweight cross-platform offline Office document preview SDK for **Android**
 
 Both platforms share the Rust parsing core `jz-office-core`; the platform layers use native components and Canvas for layout and drawing. There is no server-side conversion, no WebView, no external Office app and no bundled fonts. Android also offers an optional `viewer-online` module for online document download and cache management.
 
-The latest version is **0.17.0**. See the [CHANGELOG](CHANGELOG.md) (Chinese) for release notes and [AGENT.md](AGENT.md) (Chinese) for development, testing and release guidelines.
+The latest version is **0.18.0**. See the [CHANGELOG](CHANGELOG.md) (Chinese) for release notes and [AGENT.md](AGENT.md) (Chinese) for development, testing and release guidelines.
 
-- **GitHub Release**: [v0.17.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.17.0)
-- **Maven Central (Android)**: [io.github.donglua.office:viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.17.0) / [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.17.0)
-- **OHPM (HarmonyOS NEXT)**: `@jzdy/office` (`0.17.0`)
+- **GitHub Release**: [v0.18.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.18.0)
+- **Maven Central (Android)**: [io.github.donglua.office:viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.18.0) / [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.18.0)
+- **OHPM (HarmonyOS NEXT)**: `@jzdy/office` (`0.18.0`)
 
 ## Artifact Size
 
-Actual sizes of the `0.17.0` release artifacts (1 KiB = 1024 bytes):
+Actual sizes of the `0.18.0` release artifacts (1 KiB = 1024 bytes):
 
 | Platform | Artifact | Size | Description |
 | --- | --- | --- | --- |
-| Android | `viewer-0.17.0.aar` | **~1085 KiB** | Core DOCX / PPTX / XLSX preview, includes `arm64-v8a` and `armeabi-v7a` |
-| Android | `viewer-online-0.17.0.aar` | **~21.1 KiB** | Optional online download and cache module used with `viewer`, no extra networking dependency |
-| HarmonyOS | `jzdy-office-0.17.0.har` | **~1345 KiB** | Core preview HAR for HarmonyOS NEXT (`@jzdy/office`), includes `arm64-v8a` and `x86_64` |
-| macOS | `CJZOffice-0.17.0.xcframework.zip` | **~1.8 MiB** | macOS native core XCFramework, includes universal `arm64` (Apple Silicon) and `x86_64` (Intel) static library |
+| Android | `viewer-0.18.0.aar` | **~1150 KiB** | Core DOCX / PPTX / XLSX preview, includes `arm64-v8a` and `armeabi-v7a` |
+| Android | `viewer-online-0.18.0.aar` | **~21.1 KiB** | Optional online download and cache module used with `viewer`, no extra networking dependency |
+| HarmonyOS | `jzdy-office-0.18.0.har` | **~1417 KiB** | Core preview HAR for HarmonyOS NEXT (`@jzdy/office`), includes `arm64-v8a` and `x86_64` |
+| macOS | `CJZOffice-0.18.0.xcframework.zip` | **~1.9 MiB** | macOS native core XCFramework, includes universal `arm64` (Apple Silicon) and `x86_64` (Intel) static library |
 
 No artifact bundles fonts or demo samples. The actual size increase in your app depends on ABI filters, R8/obfuscation and packaging settings.
 
@@ -48,8 +48,8 @@ This library targets **lightweight, offline, read-only basic preview**. It does 
 
 | Format | Supported | Simplified or ignored |
 | --- | --- | --- |
-| **DOCX** | Paragraphs and style inheritance, explicit font names, font size / color / bold / italic / underline, multiple / fixed / minimum line spacing, first-line / hanging / left / right indents, 16 common auto-numbering formats, embedded images, floating images and DrawingML shapes / text boxes (`<wp:anchor>`, `<wps:wsp>`/`<wpg:wgp>`, `<wps:txbx>`), text wrapping (square / top-and-bottom / behind or in front of text), rectangular tables, footnotes and endnotes (static continuous-flow preview with automatic decimal numbering), headers and footers (scroll with content), hidden text (`vanish` / `webHidden`) and phonetic guide filtering | Continuous scrolling flow layout (`pageCount` is fixed to 1); exact pagination, tight contour clipping (approximated via bounding box), and equations are ignored; footnotes and endnotes are not positioned at page bottoms and do not provide reference navigation |
-| **PPTX** | Slides rendered in presentation order, text box alignment and wrap control, line spacing and indents, saved autofit (`normAutofit`), embedded images and `blipFill` backgrounds, rectangle / ellipse / rounded rectangle / triangle / diamond plus **26 preset geometries** (directional arrows, chevrons, polygons, stars, flowchart boxes and callouts), connector **arrowheads** (`headEnd` / `tailEnd`), **dashed strokes** (`prstDash`), and custom numeric paths, linear gradient fills and backgrounds, nested group transforms (translate / scale / rotate), tables (including horizontal and vertical merged cells) and cell fills, line charts, **standard area charts**, vertical bar charts, **horizontal bar charts**, and **pie / doughnut charts** (with `dPt` sector colors and category legends) from cached data, theme colors and luminance (`lumMod` / `lumOff`) | Animations, chart types beyond line / area / bar / horizontal bar / pie / doughnut (e.g. radar), SmartArt, preset geometry guide formulas, and WordArt are ignored; gradient text is approximated with a representative color; font fitting is not re-solved |
+| **DOCX** | Paragraphs and style inheritance, explicit font names, font size / color / bold / italic / underline, multiple / fixed / minimum line spacing, first-line / hanging / left / right indents, 16 common auto-numbering formats, embedded images, floating images and DrawingML shapes / text boxes (`<wp:anchor>`, `<wps:wsp>`/`<wpg:wgp>`, `<wps:txbx>`), text wrapping (square / top-and-bottom / behind or in front of text), embedded and floating charts via the shared DrawingML chart engine, rectangular tables, footnotes and endnotes (static continuous-flow preview with automatic decimal numbering), headers and footers (scroll with content), hidden text (`vanish` / `webHidden`) and phonetic guide filtering | Continuous scrolling flow layout (`pageCount` is fixed to 1); exact pagination, tight contour clipping (approximated via bounding box), and equations are ignored; footnotes and endnotes are not positioned at page bottoms and do not provide reference navigation |
+| **PPTX** | Slides rendered in presentation order, text box alignment and wrap control, line spacing and indents, saved autofit (`normAutofit`), embedded images and `blipFill` backgrounds, rectangle / ellipse / rounded rectangle / triangle / diamond plus **26 preset geometries** (directional arrows, chevrons, polygons, stars, flowchart boxes and callouts), connector **arrowheads** (`headEnd` / `tailEnd`), **dashed strokes** (`prstDash`), and custom numeric paths, linear gradient fills and backgrounds, nested group transforms (translate / scale / rotate), tables (including horizontal and vertical merged cells) and cell fills, shared DrawingML charts (line / area / column / bar including stacked, percent-stacked and 3D flattened to 2D, pie / doughnut, scatter, radar, combo charts with secondary axes, basic data labels, `dPt` point styles and adaptive legends) from cached data, cached SmartArt drawings (`diagramDrawing`), cached preview images for embedded OLE objects, theme colors and luminance (`lumMod` / `lumOff`) | Animations, preset geometry guide formulas, WordArt, and SmartArt / OLE objects without cached previews are ignored; 3D charts are flattened to 2D and SmartArt layout is not recalculated; gradient text is approximated with a representative color; font fitting is not re-solved |
 | **XLSX** | Multi-sheet switching, row / column headers, frozen panes (row / column header locking with viewport ratio protection and a freeze divider), **cell and range selection copy (TSV)**, smooth two-way scrolling and zooming, merged cells, row heights and column widths, font / fill / border / alignment / indent / wrap text / shrink-to-fit (when wrapping is disabled), custom indexed palette and `tint` colors, multi-section number formats (positive / negative / zero / text, percent, date, locale tag stripping), cached formula values, and embedded charts through the shared DrawingML chart engine (line / area / column / bar / pie / doughnut / scatter / radar, with cell or absolute anchors, theme colors and cached data) | Formulas and macros are not executed; floating images, conditional formatting, pivot tables and non-frozen free-split panes are ignored; rich text is merged into plain cell text; charts use cached values with simplified layout, markers and styling |
 
 - **Legacy binary formats are not supported**: `.doc`, `.ppt` and `.xls` must first be converted to `.docx`, `.pptx` and `.xlsx` (renaming the extension does not work).
@@ -78,14 +78,14 @@ Use `viewer` if you only need to preview local `Uri`s. Use `viewer-online` to al
 ```kotlin
 dependencies {
     // Option 1: local document preview only
-    implementation("io.github.donglua.office:viewer:0.17.0")
+    implementation("io.github.donglua.office:viewer:0.18.0")
 
     // Option 2: online download and cache + local preview
-    implementation("io.github.donglua.office:viewer-online:0.17.0")
+    implementation("io.github.donglua.office:viewer-online:0.18.0")
 }
 ```
 
-> If you copy the AARs from the release assets into a local `libs/` directory, online preview requires both `viewer-0.17.0.aar` and `viewer-online-0.17.0.aar`.
+> If you copy the AARs from the release assets into a local `libs/` directory, online preview requires both `viewer-0.18.0.aar` and `viewer-online-0.18.0.aar`.
 
 ### 2. Local Document Preview
 
@@ -213,7 +213,7 @@ Or add it to the module's `oh-package.json5`:
 ```json5
 {
   "dependencies": {
-    "@jzdy/office": "^0.17.0"
+    "@jzdy/office": "^0.18.0"
   }
 }
 ```
@@ -351,7 +351,7 @@ To prevent maliciously crafted documents (such as zip bombs or extremely long te
 | Input file / total expansion budget | Single file up to **128 MiB**; cumulative ZIP expansion budget up to **256 MiB**, at most **4096** entries |
 | XML parsing | A single XML up to **4 MiB**, at most **60,000** nodes, nesting depth up to **64**; DTDs and path traversal are rejected |
 | DOCX content | Cumulative text up to **8 MiB**, at most **5,000** table cells |
-| PPTX content | At most **100** slides, at most **5,000** elements / nodes / cells in total; a single chart (line / bar / horizontal bar / pie / doughnut) has at most **8** series and **4,096** data points |
+| PPTX content | At most **100** slides, at most **5,000** elements / nodes / cells in total; a single chart (line / area / column / bar / pie / doughnut / scatter / radar / combo) has at most **8** series and **4,096** data points |
 | XLSX content | At most **32** sheets, up to **10,000 rows × 256 columns** and **128** charts per sheet, at most **50,000** stored cells, **5,000** chart drawing elements and **8 MiB** of text in total; cell preview is capped at **4,096** UTF-16 code units (excess is truncated with a warning) |
 | Image decoding and caching | A single image part up to **16 MiB** compressed, longest edge up to **4,096 px**; the in-memory cache uses LRU eviction (Android pixel budget ≈ 8 million pixels / 30.5 MiB) |
 

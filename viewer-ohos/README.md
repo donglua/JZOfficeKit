@@ -6,22 +6,22 @@
 
 底层共用 Rust 解析核心 `jz-office-core`，平台层使用原生组件与 Canvas 排版绘制，不依赖服务端转换、WebView、外部 Office 应用或内置字体。Android 端另提供可选的 `viewer-online` 模块，支持在线文档下载与缓存管理。
 
-当前最新版本为 **0.17.0**，详细变更记录见 [CHANGELOG](CHANGELOG.md)，开发、测试与发布规范见 [AGENT.md](AGENT.md)。
+当前最新版本为 **0.18.0**，详细变更记录见 [CHANGELOG](CHANGELOG.md)，开发、测试与发布规范见 [AGENT.md](AGENT.md)。
 
-- **GitHub Release**：[v0.17.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.17.0)
-- **Maven Central (Android)**：[io.github.donglua.office:viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.17.0) / [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.17.0)
-- **OHPM (HarmonyOS NEXT)**：`@jzdy/office`（`0.17.0`）
+- **GitHub Release**：[v0.18.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.18.0)
+- **Maven Central (Android)**：[io.github.donglua.office:viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.18.0) / [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.18.0)
+- **OHPM (HarmonyOS NEXT)**：`@jzdy/office`（`0.18.0`）
 
 ## 产物体积
 
-以下为 `0.17.0` Release 构建产物的实际大小（1 KiB = 1024 字节）：
+以下为 `0.18.0` Release 构建产物的实际大小（1 KiB = 1024 字节）：
 
 | 平台 | 产物 | 文件大小 | 说明 |
 | --- | --- | --- | --- |
-| Android | `viewer-0.17.0.aar` | **约 1085 KiB** | DOCX / PPTX / XLSX 核心预览，含 `arm64-v8a` 与 `armeabi-v7a` |
-| Android | `viewer-online-0.17.0.aar` | **约 21.1 KiB** | 可选的在线下载与缓存模块，配合 `viewer` 使用，零额外网络库依赖 |
-| HarmonyOS | `jzdy-office-0.17.0.har` | **约 1345 KiB** | 鸿蒙 NEXT 核心预览 HAR（`@jzdy/office`），含 `arm64-v8a` 与 `x86_64` |
-| macOS | `CJZOffice-0.17.0.xcframework.zip` | **约 1.8 MiB** | macOS 原生核心 XCFramework，含 `arm64`（Apple Silicon）与 `x86_64`（Intel）双架构静态库 |
+| Android | `viewer-0.18.0.aar` | **约 1150 KiB** | DOCX / PPTX / XLSX 核心预览，含 `arm64-v8a` 与 `armeabi-v7a` |
+| Android | `viewer-online-0.18.0.aar` | **约 21.1 KiB** | 可选的在线下载与缓存模块，配合 `viewer` 使用，零额外网络库依赖 |
+| HarmonyOS | `jzdy-office-0.18.0.har` | **约 1417 KiB** | 鸿蒙 NEXT 核心预览 HAR（`@jzdy/office`），含 `arm64-v8a` 与 `x86_64` |
+| macOS | `CJZOffice-0.18.0.xcframework.zip` | **约 1.9 MiB** | macOS 原生核心 XCFramework，含 `arm64`（Apple Silicon）与 `x86_64`（Intel）双架构静态库 |
 
 产物均不打包字体或演示样例。实际接入后的应用体积增量受 ABI 过滤、R8/混淆及打包配置影响。
 
@@ -48,8 +48,8 @@ Demo 内置综合样例的真机预览效果（点击可查看大图）：
 
 | 格式 | 已支持能力 | 简化或忽略项 |
 | --- | --- | --- |
-| **DOCX** | 段落与样式继承、显式字体名传递、字号/颜色/粗斜体/下划线、倍数/固定/最小行距、首行/悬挂/左右缩进、16 种常见自动编号、内嵌图片、浮动图片与 DrawingML 图形/文本框（`<wp:anchor>`、`<wps:wsp>`/`<wpg:wgp>`、`<wps:txbx>`）、文字环绕（四周/上下/衬于文字下方/浮于文字上方）、矩形表格、脚注/尾注（连续流静态预览与自动十进制编号）、页眉页脚（随内容滚动）、隐藏文本（`vanish`/`webHidden`）与注音过滤 | 连续滚动流式布局（`pageCount` 固定为 1）；忽略精确分页、`tight`/`through` 紧密轮廓裁剪（按外接矩形近似）和公式；脚注/尾注不按页底定位，也不提供引用跳转 |
-| **PPTX** | 按演示顺序渲染幻灯片、文本框对齐与自动换行控制、行距与缩进、已保存的自动缩字（`normAutofit`）、内嵌图片与 `blipFill` 背景图、矩形/椭圆/圆角矩形/三角形/菱形及**26 种预设几何**（含方向箭头、燕尾块、多边形、星形、流程图框与标注气泡）、连接线**箭头端点**（`headEnd`/`tailEnd`）、**虚线描边**（`prstDash`）、自定义数值路径、线性渐变填充与背景、嵌套组合变换（平移/缩放/旋转）、表格（含横向/纵向合并单元格）与单元格填充、带缓存数据的折线图、**标准面积图**、垂直柱状图、**横向条形图**、**饼图与环形图**（含 `dPt` 扇区配色与分类图例）、主题色与明暗度（`lumMod`/`lumOff`） | 忽略动画、折线/面积/柱状/条形/饼图/环形图之外的图表（如雷达图）、SmartArt、预设几何引导公式、WordArt；渐变文字以代表色近似；不重新求解字体自适应 |
+| **DOCX** | 段落与样式继承、显式字体名传递、字号/颜色/粗斜体/下划线、倍数/固定/最小行距、首行/悬挂/左右缩进、16 种常见自动编号、内嵌图片、浮动图片与 DrawingML 图形/文本框（`<wp:anchor>`、`<wps:wsp>`/`<wpg:wgp>`、`<wps:txbx>`）、文字环绕（四周/上下/衬于文字下方/浮于文字上方）、内嵌与浮动图表（复用共享 DrawingML 图表引擎）、矩形表格、脚注/尾注（连续流静态预览与自动十进制编号）、页眉页脚（随内容滚动）、隐藏文本（`vanish`/`webHidden`）与注音过滤 | 连续滚动流式布局（`pageCount` 固定为 1）；忽略精确分页、`tight`/`through` 紧密轮廓裁剪（按外接矩形近似）和公式；脚注/尾注不按页底定位，也不提供引用跳转 |
+| **PPTX** | 按演示顺序渲染幻灯片、文本框对齐与自动换行控制、行距与缩进、已保存的自动缩字（`normAutofit`）、内嵌图片与 `blipFill` 背景图、矩形/椭圆/圆角矩形/三角形/菱形及**26 种预设几何**（含方向箭头、燕尾块、多边形、星形、流程图框与标注气泡）、连接线**箭头端点**（`headEnd`/`tailEnd`）、**虚线描边**（`prstDash`）、自定义数值路径、线性渐变填充与背景、嵌套组合变换（平移/缩放/旋转）、表格（含横向/纵向合并单元格）与单元格填充、共享 DrawingML 图表（折线/面积/柱状/条形，含堆叠、百分比堆叠与 3D 扁平化、饼/环、散点、雷达、组合图与次坐标轴，支持基础数据标签、`dPt` 点样式与图例自适应）、SmartArt 缓存图形（`diagramDrawing`）、内嵌 OLE 缓存预览图、主题色与明暗度（`lumMod`/`lumOff`） | 忽略动画、预设几何引导公式、WordArt 及无缓存绘制的 SmartArt/OLE 对象；3D 图表按 2D 扁平化绘制，SmartArt 不重算布局；渐变文字以代表色近似；不重新求解字体自适应 |
 | **XLSX** | 多工作表切换、行列标题、冻结窗格（按行列锁定表头，含视口比例保护与冻结分割线）、**单元格与区域选择复制（TSV）**、双向平滑滚动与缩放、合并单元格、行高列宽、字体/填充/边框/对齐/缩进/自动换行/自动缩字（未启用换行时）、自定义索引调色板与 `tint` 明暗色、多段数字格式（正/负/零/文本、百分比、日期、区域标签剥离）、公式缓存值显示、复用共享 DrawingML 图表引擎的内嵌图表（折线、面积、柱/条形、饼/环、散点与雷达图，支持单元格/绝对锚点、主题色和缓存数据） | 不执行公式计算或宏；忽略工作表浮动图片、条件格式、数据透视表和非冻结的自由拆分窗格；富文本合并为单元格普通文字；图表使用缓存值，布局、标记和样式作简化 |
 
 - **不支持旧版二进制格式**：`.doc`、`.ppt`、`.xls` 需先转换为 `.docx`、`.pptx`、`.xlsx`（仅修改文件扩展名无效）。
@@ -78,14 +78,14 @@ dependencyResolutionManagement {
 ```kotlin
 dependencies {
     // 方式一：仅本地文档预览
-    implementation("io.github.donglua.office:viewer:0.17.0")
+    implementation("io.github.donglua.office:viewer:0.18.0")
 
     // 方式二：包含在线下载与缓存 + 本地预览
-    implementation("io.github.donglua.office:viewer-online:0.17.0")
+    implementation("io.github.donglua.office:viewer-online:0.18.0")
 }
 ```
 
-> 若直接拷贝 Release 附件中的 AAR 到本地 `libs/`，在线预览需同时引入 `viewer-0.17.0.aar` 和 `viewer-online-0.17.0.aar`。
+> 若直接拷贝 Release 附件中的 AAR 到本地 `libs/`，在线预览需同时引入 `viewer-0.18.0.aar` 和 `viewer-online-0.18.0.aar`。
 
 ### 2. 本地文档预览
 
@@ -213,7 +213,7 @@ ohpm install @jzdy/office
 ```json5
 {
   "dependencies": {
-    "@jzdy/office": "^0.17.0"
+    "@jzdy/office": "^0.18.0"
   }
 }
 ```
@@ -351,7 +351,7 @@ let thumbnail: NSImage = try await OfficeThumbnail.renderAsync(
 | 输入文件 / 整包解压预算 | 单文件最大 **128 MiB**；ZIP 累计解压预算最大 **256 MiB**，最多 **4096** 个条目 |
 | XML 解析限制 | 单个 XML 最大 **4 MiB**、最多 **60,000** 个节点、最大嵌套深度 **64** 层；拒绝 DTD 与路径穿越 |
 | DOCX 内容限制 | 累计文本最大 **8 MiB**，表格最多 **5,000** 个单元格 |
-| PPTX 内容限制 | 最多 **100** 页，累计最多 **5,000** 个元素/节点/单元格；单图表（折线图/柱状图）最多 **8** 系列、**4,096** 数据点 |
+| PPTX 内容限制 | 最多 **100** 页，累计最多 **5,000** 个元素/节点/单元格；单图表（折线/面积/柱状/条形/饼/环/散点/雷达/组合图）最多 **8** 系列、**4,096** 数据点 |
 | XLSX 内容限制 | 最多 **32** 张工作表，单表最大 **10,000 行 × 256 列**、**128** 张图表，全表最多 **50,000** 个存储单元格、**5,000** 个图表绘制元素、**8 MiB** 文本；单元格预览上限 **4,096** 个 UTF-16 码元（超出自动截断并提示） |
 | 图片解码与缓存 | 单个图片部件压缩数据最大 **16 MiB**，最长边上限 **4,096 px**；内存缓存采用 LRU 淘汰（Android 端像素预算约 800 万像素 / 30.5 MiB） |
 

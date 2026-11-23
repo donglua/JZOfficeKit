@@ -1,8 +1,23 @@
 # 更新日志
 
-## Unreleased
+## 0.18.0
 
-- **XLSX 内嵌图表**：复用 `core` 共享图表引擎输出的通用元素，在冻结四象限内完成图表绘制并支持滚动、缩放与缩略图；`Sheet.elements` 为可选字段，`schemaVersion` 保持 **9**。
+发布页面：[v0.18.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.18.0)。
+
+本版本提取跨文档格式共享的 OOXML 图表引擎，新增 DOCX 与 XLSX 内嵌图表（鸿蒙端同步支持冻结四象限图表渲染与缩略图绘制），扩展堆叠/百分比堆叠图表、3D 图表 2D 扁平化、组合图与次坐标轴、散点图与雷达图、数据标签、`dPt` 点样式与图例自适应，并新增 PPTX SmartArt 缓存图形、OLE 缓存预览图与 `mc:AlternateContent` 解包支持，`schemaVersion` 保持 **9** 不变。
+
+### 排版与特性
+
+- **XLSX 内嵌图表（`core` / `viewer-ohos`）**：复用 `core` 共享图表引擎输出的通用元素，在 `SpreadsheetView.ets` 冻结四象限内完成图表绘制并支持滚动、缩放与离屏裁剪剔除，同时在 `OfficeThumbnail.ets` 缩略图生成中统一绘制；`Sheet.elements` 为可选字段，`schemaVersion` 保持 **9**。
+- **DOCX 内嵌图表与共享图表引擎扩展（`core`）**：
+  - 支持 DOCX 内嵌/浮动图表及页眉页脚图表渲染。
+  - 支持堆叠与百分比堆叠柱/条形/折线/面积图、3D 图表 2D 扁平化、组合图与次坐标轴、散点图与雷达图、基础数据标签、图例位置自适应及 `<c:dPt>` 单点样式。
+- **PPTX 兼容性扩展（`core`）**：支持从缓存 `diagramDrawing` 渲染 SmartArt、绘制嵌入式 OLE 对象缓存预览图，并按规则解包 `mc:AlternateContent` 分支。
+
+### 测试与修复
+
+- **测试**：新增 `core/tests/docx_charts.rs`、`xlsx_charts.rs`、`pptx_diagram.rs` 并扩展 `pptx_charts.rs`、`pptx_drawing.rs`；扩展 `scripts/tests/SheetFreezeChecks.ts`（**162** 项检查）验证鸿蒙端 `SpreadsheetView` 与 `OfficeThumbnail` 的图表渲染与裁剪。
+- **代码规范**：修复 `core/src/xlsx/drawing.rs` 格式及 `core/tests/xlsx_charts.rs` 的 `clippy` 告警。
 
 ## 0.17.0
 
