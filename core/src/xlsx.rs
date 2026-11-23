@@ -3,6 +3,7 @@ mod cells;
 mod colors;
 mod coordinates;
 mod dates;
+mod drawing;
 mod format;
 mod styles;
 mod worksheet;
@@ -26,13 +27,26 @@ struct Budget {
     cells: usize,
     text: usize,
     merges: usize,
+    elements: usize,
 }
 
 impl Budget {
-    fn text(&mut self, value: &str) -> Result<()> {
-        self.text += value.len();
+    fn text_bytes(&mut self, bytes: usize) -> Result<()> {
+        self.text += bytes;
         if self.text > MAX_TEXT {
             return Err(Error::Limit("XLSX text exceeds 8 MiB"));
+        }
+        Ok(())
+    }
+
+    fn text(&mut self, value: &str) -> Result<()> {
+        self.text_bytes(value.len())
+    }
+
+    fn elements(&mut self, count: usize) -> Result<()> {
+        self.elements += count;
+        if self.elements > 5000 {
+            return Err(Error::Limit("XLSX exceeds 5000 drawing elements"));
         }
         Ok(())
     }
@@ -50,6 +64,7 @@ struct Workbook {
     styles: Vec<Style>,
     strings: Vec<String>,
     date1904: bool,
+    theme: crate::pptx::colors::Theme,
     budget: Budget,
 }
 
@@ -66,12 +81,14 @@ pub(crate) fn parse(package: &mut Package, part: &str, scope: crate::Scope) -> R
     let style_root = related_xml(package, part, "styles")?;
     let styles = styles::parse(style_root.as_ref(), theme.as_ref(), &mut document)?;
     document.cell_styles = styles.iter().map(|style| style.cell.clone()).collect();
+    let chart_theme = crate::pptx::colors::Theme::from_node(theme.as_ref(), &mut document);
     let mut workbook = Workbook {
         styles,
         strings: Vec::new(),
         date1904: root
             .child("workbookPr")
             .map_or(Ok(false), |n| boolean(n.attr("date1904"), false))?,
+        theme: chart_theme,
         budget: Budget::default(),
     };
     if let Some(strings) = related_xml(package, part, "sharedStrings")? {
@@ -118,6 +135,7 @@ pub(crate) fn parse(package: &mut Package, part: &str, scope: crate::Scope) -> R
                 column_widths: vec![48.0],
                 cells: Vec::new(),
                 merges: Vec::new(),
+                elements: Vec::new(),
                 frozen_rows: 0,
                 frozen_columns: 0,
                 geometry: Some(crate::spreadsheet::SheetGeometry::compute(
@@ -127,6 +145,7 @@ pub(crate) fn parse(package: &mut Package, part: &str, scope: crate::Scope) -> R
                         column_widths: vec![48.0],
                         cells: Vec::new(),
                         merges: Vec::new(),
+                        elements: Vec::new(),
                         frozen_rows: 0,
                         frozen_columns: 0,
                         geometry: None,
@@ -140,7 +159,8 @@ pub(crate) fn parse(package: &mut Package, part: &str, scope: crate::Scope) -> R
             document.warn("Non-worksheet sheets are not supported");
             continue;
         }
-        let mut parsed = worksheet::parse(&node, name, &mut workbook, &mut document)?;
+        let mut parsed =
+            worksheet::parse(package, target, &node, name, &mut workbook, &mut document)?;
         parsed.geometry = Some(crate::spreadsheet::SheetGeometry::compute(&parsed));
         document.sheets.push(parsed);
         parsed_sheets += 1;

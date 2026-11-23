@@ -9,6 +9,10 @@ pub struct Sheet {
     pub column_widths: Vec<f32>,
     pub cells: Vec<Cell>,
     pub merges: Vec<CellRange>,
+    /// 工作表浮动图表编译后的通用绘制元素，坐标为不含行列标头的数据区 point 坐标。
+    /// 复用 DOCX / PPTX 的 Element 模型与共享图表引擎，空列表不进入跨语言协议。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub elements: Vec<crate::model::Element>,
     /// 从工作表首行开始锁定的行数，0 表示不冻结（schemaVersion 9 新增可选字段）
     #[serde(default, skip_serializing_if = "crate::model::is_zero_u32")]
     pub frozen_rows: u32,

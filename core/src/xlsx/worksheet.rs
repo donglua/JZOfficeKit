@@ -1,10 +1,12 @@
-use super::{boolean, coordinates, dimension, unsigned, Workbook};
+use super::{boolean, coordinates, dimension, drawing, unsigned, Workbook};
 use crate::model::{Cell, Document, Sheet};
 use crate::xml::Node;
-use crate::{Error, Result};
+use crate::{Error, Package, Result};
 use std::collections::HashSet;
 
 pub(super) fn parse(
+    package: &mut Package,
+    source: &str,
     root: &Node,
     name: &str,
     workbook: &mut Workbook,
@@ -25,6 +27,7 @@ pub(super) fn parse(
         column_widths: vec![column_width],
         cells: Vec::new(),
         merges: Vec::new(),
+        elements: Vec::new(),
         frozen_rows: 0,
         frozen_columns: 0,
         geometry: None,
@@ -129,8 +132,19 @@ pub(super) fn parse(
     // sheetViews 必须放在 sheetData / mergeCells 之后解析：只有此时 row_heights 与 column_widths
     // 的最终维度才确定，冻结行列数才能钳位到工作表实际范围。
     freeze::apply(root, &mut sheet, document)?;
+    drawing::parse(
+        package,
+        source,
+        root,
+        &mut sheet,
+        drawing::GridDefaults {
+            row_height: default_height,
+            column_width,
+        },
+        workbook,
+        document,
+    )?;
     for feature in [
-        "drawing",
         "legacyDrawing",
         "picture",
         "pivotTableParts",
