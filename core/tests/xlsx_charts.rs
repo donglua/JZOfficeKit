@@ -222,17 +222,18 @@ fn invalid_or_oversized_anchors_do_not_inflate_sheet_extents() -> TestResult {
 
 #[test]
 fn non_chart_drawings_warn_and_alternate_content_charts_render() -> TestResult {
+    // `<xdr:pic/>` 现在会被当作受支持负载（缺关系时另发缺失图片告警），
+    // 因此用未知 URI 的 graphicFrame 触发「其它未支持负载」告警。
     let xml = drawing(&format!(
-        r#"<xdr:twoCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>2</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>2</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:pic/><xdr:clientData/></xdr:twoCellAnchor>
+        r#"<xdr:twoCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>2</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>2</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="2" name="Diagram"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram"/></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor>
         <mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Choice Requires="xdr">{}</mc:Choice><mc:Fallback/></mc:AlternateContent>"#,
         two_cell_anchor()
     ));
     let document = parse(&xml)?;
     assert!(!document.sheets[0].elements.is_empty());
-    assert!(document
-        .warnings
-        .iter()
-        .any(|w| w == "Worksheet drawings other than charts are not rendered"));
+    assert!(document.warnings.iter().any(|w| {
+        w == "Worksheet drawings other than supported charts, pictures, and shapes are not rendered"
+    }));
     Ok(())
 }
 

@@ -144,8 +144,11 @@ pub(super) fn parse(
         workbook,
         document,
     )?;
+    // 旧版 VML（批注气泡、表单控件）不在标准 `wsDr` DrawingML 范围内，单独给出针对性告警
+    if root.child("legacyDrawing").is_some() || root.child("legacyDrawingHF").is_some() {
+        document.warn("XLSX legacy VML drawings and comments are not supported.");
+    }
     for feature in [
-        "legacyDrawing",
         "picture",
         "pivotTableParts",
         "conditionalFormatting",

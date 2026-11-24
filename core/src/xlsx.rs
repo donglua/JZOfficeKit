@@ -21,6 +21,7 @@ const MAX_STYLES: usize = 2_048;
 pub(crate) const MAX_SHEETS: usize = 32;
 const MAX_CELLS: usize = 50_000;
 const MAX_TEXT: usize = 8 * 1024 * 1024;
+const MAX_PATH_COMMANDS: usize = 100_000;
 
 #[derive(Default)]
 struct Budget {
@@ -28,6 +29,7 @@ struct Budget {
     text: usize,
     merges: usize,
     elements: usize,
+    path_commands: usize,
 }
 
 impl Budget {
@@ -47,6 +49,15 @@ impl Budget {
         self.elements += count;
         if self.elements > 5000 {
             return Err(Error::Limit("XLSX exceeds 5000 drawing elements"));
+        }
+        Ok(())
+    }
+
+    /// 自定义路径命令预算：防止多预设图形与 `custGeom` 堆叠造成光栅化放大攻击。
+    fn path_commands(&mut self, count: usize) -> Result<()> {
+        self.path_commands = self.path_commands.saturating_add(count);
+        if self.path_commands > MAX_PATH_COMMANDS {
+            return Err(Error::Limit("XLSX exceeds 100000 custom path commands"));
         }
         Ok(())
     }
