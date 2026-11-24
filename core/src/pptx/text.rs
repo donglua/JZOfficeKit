@@ -18,125 +18,175 @@ pub(super) struct Text<'a> {
 
 impl Text<'_> {
     pub fn read(&mut self, body: &Node) -> Result<Vec<Paragraph>> {
-        let mut output = Vec::new();
-        let mut numbering = [0_u32; 9];
-        for paragraph in body.named("p") {
-            let direct = paragraph.child("pPr");
-            let level = direct.map_or(0, paragraph_level);
-            let mut defaults = Vec::new();
-            level_defaults(self.defaults, level, &mut defaults);
-            level_defaults(
-                self.master
-                    .and_then(|n| n.child("txStyles"))
-                    .and_then(|n| n.child(text_style(self.chain))),
-                level,
-                &mut defaults,
-            );
-            for shape in self.chain {
-                if let Some(reference) = shape.child("style").and_then(|n| n.child("fontRef")) {
-                    defaults.push(reference);
-                }
-                if let Some(shape_body) = shape.child("txBody") {
-                    level_defaults(shape_body.child("lstStyle"), level, &mut defaults);
-                    if !std::ptr::eq(shape_body, body) {
-                        if let Some(properties) = shape_body
-                            .named("p")
-                            .filter_map(|p| p.child("pPr"))
-                            .find(|p| paragraph_level(p) == level)
-                        {
-                            defaults.push(properties);
-                        }
-                    }
-                }
-            }
-            if self.chain.is_empty() {
-                level_defaults(body.child("lstStyle"), level, &mut defaults);
-            }
-            if let Some(direct) = direct {
-                defaults.push(direct);
-            }
-            let mut base = Run {
-                size: 18.0,
-                color: self.theme.text_color(),
-                ..Run::default()
-            };
-            let mut result = Paragraph {
-                after: 0.0,
-                ..Paragraph::default()
-            };
-            let mut bullet = None;
-            let mut styles = TextStyle {
-                doc: self.doc,
-                theme: self.theme,
-            };
-            for properties in defaults {
-                if properties.name == "fontRef" {
-                    base.color = styles.theme.color(properties, base.color, styles.doc);
-                    continue;
-                }
-                styles.paragraph(&mut result, properties);
-                styles.run(&mut base, properties.child("defRPr"));
-                for property in &properties.children {
-                    if matches!(
-                        property.name.as_str(),
-                        "buNone" | "buChar" | "buAutoNum" | "buBlip"
-                    ) {
-                        bullet = Some(property);
-                    }
-                }
-            }
-            if let Some(bullet) = bullet {
-                match bullet.name.as_str() {
-                    "buChar" => result.bullet = format!("{} ", bullet.attr("char")),
-                    "buAutoNum" => {
-                        let counter = numbering
-                            .get_mut(level)
-                            .ok_or(Error::Invalid("Invalid PPTX list level"))?;
-                        if *counter == 0 {
-                            *counter = bullet
-                                .attr("startAt")
-                                .parse::<u32>()
-                                .unwrap_or(1)
-                                .clamp(1, 32767);
-                        }
-                        result.bullet = numbering::format(*counter, bullet.attr("type"))
-                            .unwrap_or_else(|| {
-                                styles.doc.warn("PPTX numbered lists use decimal numbers.");
-                                format!("{counter}. ")
-                            });
-                        *counter += 1;
-                    }
-                    "buBlip" => styles.doc.warn("PPTX picture bullets are omitted."),
-                    _ => (),
-                }
-            }
-            for counter in numbering.iter_mut().skip(level + 1) {
-                *counter = 0;
-            }
-            self.budget.text(result.bullet.len())?;
-            collect_runs(paragraph, &base, &mut styles, self.budget, &mut result.runs)?;
-            if result.runs.is_empty() {
-                styles.run(&mut base, paragraph.child("endParaRPr"));
-                result.runs.push(base);
-            }
-            output.push(result);
-        }
-        apply_autofit(&mut output, body, self.chain);
-        Ok(output)
+        read_paragraphs_inner(
+            body,
+            self.chain,
+            self.defaults,
+            self.master,
+            self.theme,
+            18.0,
+            self.doc,
+            &mut |bytes| self.budget.text(bytes),
+        )
     }
+}
+
+/// 解析一 `<xdr:txBody>` / `<p:txBody>` 下的段落，字号基线、继承链与文本预算由调用方指定。
+///
+/// PPTX 幻灯片通过 [`Text::read`] 传入 `18.0` 与母版/版式继承链；XLSX 工作表形状没有母版与版式，
+/// 以 `default_font_size = 11.0`（Excel 形状文本默认字号）与单形状继承链调用。
+pub(crate) fn read_drawing_paragraphs(
+    body: &Node,
+    shape: &Node,
+    theme: &Theme,
+    default_font_size: f32,
+    doc: &mut Document,
+    add_text_bytes: &mut impl FnMut(usize) -> Result<()>,
+) -> Result<Vec<Paragraph>> {
+    read_paragraphs_inner(
+        body,
+        &[shape],
+        None,
+        None,
+        theme,
+        default_font_size,
+        doc,
+        add_text_bytes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_paragraphs_inner(
+    body: &Node,
+    chain: &[&Node],
+    defaults_source: Option<&Node>,
+    master: Option<&Node>,
+    theme: &Theme,
+    default_font_size: f32,
+    doc: &mut Document,
+    add_text_bytes: &mut impl FnMut(usize) -> Result<()>,
+) -> Result<Vec<Paragraph>> {
+    let mut output = Vec::new();
+    let mut numbering = [0_u32; 9];
+    for paragraph in body.named("p") {
+        let direct = paragraph.child("pPr");
+        let level = direct.map_or(0, paragraph_level);
+        let mut defaults = Vec::new();
+        level_defaults(defaults_source, level, &mut defaults);
+        level_defaults(
+            master
+                .and_then(|n| n.child("txStyles"))
+                .and_then(|n| n.child(text_style(chain))),
+            level,
+            &mut defaults,
+        );
+        for shape in chain {
+            if let Some(reference) = shape.child("style").and_then(|n| n.child("fontRef")) {
+                defaults.push(reference);
+            }
+            if let Some(shape_body) = shape.child("txBody") {
+                level_defaults(shape_body.child("lstStyle"), level, &mut defaults);
+                if !std::ptr::eq(shape_body, body) {
+                    if let Some(properties) = shape_body
+                        .named("p")
+                        .filter_map(|p| p.child("pPr"))
+                        .find(|p| paragraph_level(p) == level)
+                    {
+                        defaults.push(properties);
+                    }
+                }
+            }
+        }
+        if chain.is_empty() {
+            level_defaults(body.child("lstStyle"), level, &mut defaults);
+        }
+        if let Some(direct) = direct {
+            defaults.push(direct);
+        }
+        let mut base = Run {
+            size: default_font_size,
+            color: theme.text_color(),
+            ..Run::default()
+        };
+        let mut result = Paragraph {
+            after: 0.0,
+            ..Paragraph::default()
+        };
+        let mut bullet = None;
+        let mut styles = TextStyle { doc, theme };
+        for properties in defaults {
+            if properties.name == "fontRef" {
+                base.color = styles.theme.color(properties, base.color, styles.doc);
+                continue;
+            }
+            styles.paragraph(&mut result, properties);
+            styles.run(&mut base, properties.child("defRPr"));
+            for property in &properties.children {
+                if matches!(
+                    property.name.as_str(),
+                    "buNone" | "buChar" | "buAutoNum" | "buBlip"
+                ) {
+                    bullet = Some(property);
+                }
+            }
+        }
+        if let Some(bullet) = bullet {
+            match bullet.name.as_str() {
+                "buChar" => result.bullet = format!("{} ", bullet.attr("char")),
+                "buAutoNum" => {
+                    let counter = numbering
+                        .get_mut(level)
+                        .ok_or(Error::Invalid("Invalid PPTX list level"))?;
+                    if *counter == 0 {
+                        *counter = bullet
+                            .attr("startAt")
+                            .parse::<u32>()
+                            .unwrap_or(1)
+                            .clamp(1, 32767);
+                    }
+                    result.bullet = numbering::format(*counter, bullet.attr("type"))
+                        .unwrap_or_else(|| {
+                            styles.doc.warn("PPTX numbered lists use decimal numbers.");
+                            format!("{counter}. ")
+                        });
+                    *counter += 1;
+                }
+                "buBlip" => styles.doc.warn("PPTX picture bullets are omitted."),
+                _ => (),
+            }
+        }
+        for counter in numbering.iter_mut().skip(level + 1) {
+            *counter = 0;
+        }
+        add_text_bytes(result.bullet.len())?;
+        collect_runs(
+            paragraph,
+            &base,
+            &mut styles,
+            add_text_bytes,
+            &mut result.runs,
+        )?;
+        if result.runs.is_empty() {
+            styles.run(&mut base, paragraph.child("endParaRPr"));
+            result.runs.push(base);
+        }
+        output.push(result);
+    }
+    apply_autofit(&mut output, body, chain);
+    Ok(output)
 }
 
 fn collect_runs(
     parent: &Node,
     base: &Run,
     styles: &mut TextStyle<'_>,
-    budget: &mut Budget,
+    add_text_bytes: &mut impl FnMut(usize) -> Result<()>,
     runs: &mut Vec<Run>,
 ) -> Result<()> {
     for item in &parent.children {
         if item.name == "AlternateContent" {
             if let Some(branch) = super::unsupported::select_alternate(item) {
-                collect_runs(branch.node, base, styles, budget, runs)?;
+                collect_runs(branch.node, base, styles, add_text_bytes, runs)?;
             }
             continue;
         }
@@ -155,7 +205,7 @@ fn collect_runs(
             }
         }
         styles.run(&mut run, item.child("rPr"));
-        budget.text(run.text.len())?;
+        add_text_bytes(run.text.len())?;
         runs.push(run);
     }
     Ok(())

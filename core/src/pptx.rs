@@ -9,14 +9,14 @@ mod numbering;
 mod parts;
 mod path;
 mod preset_geometry;
-mod render;
+pub(crate) mod render;
 mod round_rect;
 pub(crate) mod styles;
 mod table;
-mod text;
+pub(crate) mod text;
 mod text_fill;
 pub(crate) mod text_style;
-mod transform;
+pub(crate) mod transform;
 mod unsupported;
 
 use crate::model::{Document, Kind, Page};

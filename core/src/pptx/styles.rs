@@ -110,6 +110,17 @@ impl Styles<'_> {
         true
     }
 
+    /// 仅解析边框线型（`style/lnRef` 与 `spPr/ln`），不解析填充、几何与特效，
+    /// 供图片外框描边使用，避免非矩形蒙版误触发复杂几何降级告警或丢弃边框。
+    pub(crate) fn line_only(&mut self, shape: &Node, element: &mut Element) {
+        if let Some(line) = shape.child("style").and_then(|s| s.child("lnRef")) {
+            self.line_reference(element, line);
+        }
+        if let Some(line) = shape.child("spPr").and_then(|p| p.child("ln")) {
+            self.line(element, line);
+        }
+    }
+
     fn line_reference(&mut self, element: &mut Element, reference: &Node) {
         let index = reference.attr("idx").parse::<usize>().unwrap_or(0);
         if index == 0 {

@@ -14,7 +14,7 @@ pub(crate) fn points(value: &str) -> Option<f32> {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct Bounds {
+pub(crate) struct Bounds {
     x: f32,
     y: f32,
     width: f32,
@@ -25,11 +25,31 @@ pub(super) struct Bounds {
 }
 
 impl Bounds {
-    pub fn from_xfrm(transform: &Node) -> Option<Self> {
+    /// 以锚点算出的 `Frame` 作为位置与宽高的权威来源，仅从 `xfrm` 提取旋转与翻转。
+    ///
+    /// XLSX 工作表 DrawingML 的 `twoCellAnchor` / `oneCellAnchor` / `absoluteAnchor` 已经把最终
+    /// 外框折算成 point 坐标，`spPr/a:xfrm` 里的 `off`/`ext` 与之重复且常被 Excel 写成 0，
+    /// 因此这里只沿用 `rot`、`flipH`、`flipV`。
+    pub(crate) fn from_frame(x: f32, y: f32, width: f32, height: f32, xfrm: Option<&Node>) -> Self {
+        let rotation = xfrm.map_or(0.0, |t| (number(t.attr("rot"), 0.0) / 60000.0) % 360.0);
+        let flip_h = xfrm.is_some_and(|t| flag(t.attr("flipH"), false));
+        let flip_v = xfrm.is_some_and(|t| flag(t.attr("flipV"), false));
+        Self {
+            x,
+            y,
+            width,
+            height,
+            rotation,
+            flip_h,
+            flip_v,
+        }
+    }
+
+    pub(crate) fn from_xfrm(transform: &Node) -> Option<Self> {
         Self::from_xfrms(std::iter::once(transform))
     }
 
-    pub fn parse(chain: &[&Node]) -> Option<Self> {
+    pub(crate) fn parse(chain: &[&Node]) -> Option<Self> {
         Self::from_xfrms(chain.iter().filter_map(|shape| match shape.name.as_str() {
             "graphicFrame" => shape.child("xfrm"),
             _ => shape.child("spPr").and_then(|p| p.child("xfrm")),
@@ -70,7 +90,7 @@ impl Bounds {
         })
     }
 
-    pub fn element(self, kind: ElementType) -> Element {
+    pub(crate) fn element(self, kind: ElementType) -> Element {
         Element {
             kind,
             x: self.x,
@@ -84,7 +104,7 @@ impl Bounds {
         }
     }
 
-    pub fn in_slide_units(self, transform: Transform) -> Option<(Self, Transform)> {
+    pub(crate) fn in_slide_units(self, transform: Transform) -> Option<(Self, Transform)> {
         if transform.0 == Transform::IDENTITY.0 {
             return Some((self, transform));
         }
@@ -123,7 +143,7 @@ impl Bounds {
         Some((bounds, Transform([a / sx, b / sx, c / sy, d / sy, x, y])))
     }
 
-    pub fn text_element(self, chain: &[&Node], doc: &mut Document) -> Option<Element> {
+    pub(crate) fn text_element(self, chain: &[&Node], doc: &mut Document) -> Option<Element> {
         let (mut left, mut right, mut top, mut bottom) = (7.2, 7.2, 3.6, 3.6);
         let mut vertical_alignment = VerticalAlignment::Top;
         let mut text_wrap = true;

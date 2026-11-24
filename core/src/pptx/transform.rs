@@ -9,13 +9,13 @@ use crate::{
 
 /// Maps child coordinates to slide coordinates: x' = ax + cy + e, y' = bx + dy + f.
 #[derive(Clone, Copy)]
-pub(super) struct Transform(pub [f32; 6]);
+pub(crate) struct Transform(pub [f32; 6]);
 
 impl Transform {
     pub const IDENTITY: Self = Self([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
 
     /// 将外层变换与容器框架自身的平移/旋转/翻转合并为子坐标系的仿射矩阵。
-    pub fn frame(self, bounds: Bounds) -> Option<Self> {
+    pub(crate) fn frame(self, bounds: Bounds) -> Option<Self> {
         let mut element = bounds.element(ElementType::RECT);
         element.transform = self.0;
         let combined = drawing::element_transform(&element);
@@ -25,14 +25,33 @@ impl Transform {
             .then_some(Self(combined))
     }
 
-    pub fn group(self, group: &Node) -> Option<Self> {
+    pub(crate) fn group(self, group: &Node) -> Option<Self> {
         let node = group.child("grpSpPr")?.child("xfrm")?;
         let off = node.child("off")?;
         let ext = node.child("ext")?;
-        let child_off = node.child("chOff")?;
-        let child_ext = node.child("chExt")?;
         let (x, y) = (points(off.attr("x"))?, points(off.attr("y"))?);
         let (w, h) = (points(ext.attr("cx"))?, points(ext.attr("cy"))?);
+        self.combine_group(node, x, y, w, h)
+    }
+
+    /// 顶层 XLSX `<xdr:grpSp>` 版本：锚点 `Frame` 已给出群组在数据区的最终外框，
+    /// 因此用它替代 `grpSpPr/xfrm` 里的 `off`/`ext`，只保留 `chOff`/`chExt` 与 `rot`。
+    pub(crate) fn group_in_frame(
+        self,
+        group: &Node,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> Option<Self> {
+        let node = group.child("grpSpPr")?.child("xfrm")?;
+        self.combine_group(node, x, y, width, height)
+    }
+
+    /// 由容器外框 `(x, y, w, h)` 与 `xfrm` 中的 `chOff`/`chExt`/`rot` 构建子坐标系仿射矩阵。
+    fn combine_group(self, node: &Node, x: f32, y: f32, w: f32, h: f32) -> Option<Self> {
+        let child_off = node.child("chOff")?;
+        let child_ext = node.child("chExt")?;
         let (cx, cy) = (points(child_off.attr("x"))?, points(child_off.attr("y"))?);
         let (cw, ch) = (points(child_ext.attr("cx"))?, points(child_ext.attr("cy"))?);
         if w <= 0.0 || h <= 0.0 || cw <= 0.0 || ch <= 0.0 {
@@ -66,7 +85,7 @@ impl Transform {
             .then_some(Self(combined))
     }
 
-    pub fn accepts(self, element: &Element) -> bool {
+    pub(crate) fn accepts(self, element: &Element) -> bool {
         let [a, b, c, d, e, f] = self.0;
         let (sin, cos) = element.rotation.to_radians().sin_cos();
         let (hw, hh) = (element.width / 2.0, element.height / 2.0);
@@ -82,7 +101,7 @@ impl Transform {
     }
 }
 
-pub(super) fn flipped(group: &Node) -> bool {
+pub(crate) fn flipped(group: &Node) -> bool {
     group
         .child("grpSpPr")
         .and_then(|p| p.child("xfrm"))

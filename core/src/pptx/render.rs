@@ -288,8 +288,21 @@ impl Render<'_> {
 const MIN_SOURCE_FRACTION: f32 = 0.001;
 
 fn parse_image_crop(crop: &Node, doc: &mut Document) -> Option<ImageCrop> {
+    parse_image_crop_with_warning(
+        crop,
+        "PPTX pictures with invalid crop bounds use the full image.",
+        doc,
+    )
+}
+
+/// 与 [`parse_image_crop`] 同一裁剪规则，告警文案由调用方指定，供 XLSX 工作表图片复用。
+pub(crate) fn parse_image_crop_with_warning(
+    crop: &Node,
+    warning: &str,
+    doc: &mut Document,
+) -> Option<ImageCrop> {
     let Some(image_crop) = crop_values(crop) else {
-        doc.warn("PPTX pictures with invalid crop bounds use the full image.");
+        doc.warn(warning);
         return None;
     };
     let source_width = 1.0 - image_crop.left - image_crop.right;
@@ -297,7 +310,7 @@ fn parse_image_crop(crop: &Node, doc: &mut Document) -> Option<ImageCrop> {
     if source_width > MIN_SOURCE_FRACTION && source_height > MIN_SOURCE_FRACTION {
         Some(image_crop)
     } else {
-        doc.warn("PPTX pictures with invalid crop bounds use the full image.");
+        doc.warn(warning);
         None
     }
 }

@@ -5,6 +5,19 @@ use crate::model::{Document, Element, GradientFill, Page};
 mod tests;
 
 pub(super) fn prepare(element: &mut Element, page: &Page, doc: &mut Document) -> bool {
+    prepare_with_slide_size(element, Some([page.width, page.height]), doc)
+}
+
+/// 与 [`prepare`] 共用同一套变换、裁剪与渐变收敛规则，供没有幻灯片背景概念的格式（XLSX 工作表图形）复用。
+pub(crate) fn prepare_element(element: &mut Element, doc: &mut Document) -> bool {
+    prepare_with_slide_size(element, None, doc)
+}
+
+fn prepare_with_slide_size(
+    element: &mut Element,
+    slide_size: Option<[f32; 2]>,
+    doc: &mut Document,
+) -> bool {
     element.transform = element_transform(element);
     if element
         .transform
@@ -25,13 +38,19 @@ pub(super) fn prepare(element: &mut Element, page: &Page, doc: &mut Document) ->
     });
     if let Some(fill) = &mut element.fill_gradient {
         let size = if fill.in_slide_space {
+            // 幻灯片背景渐变依赖页面尺寸与形状变换的逆矩阵；XLSX 工作表没有幻灯片背景，
+            // 调用方传 `None` 时直接丢弃该渐变并保留形状的其余外观。
+            let Some(slide_size) = slide_size else {
+                element.fill_gradient = None;
+                return true;
+            };
             let Some(inverse) = inverse(element.transform) else {
                 element.fill_gradient = None;
                 doc.warn("Slide background fill has an invalid shape transform");
                 return true;
             };
             fill.transform = Some(inverse);
-            [page.width, page.height]
+            slide_size
         } else {
             [element.width, element.height]
         };
