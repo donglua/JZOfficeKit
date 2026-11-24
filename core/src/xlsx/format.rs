@@ -280,7 +280,11 @@ pub(super) fn tokenize_section(code: &str) -> Option<Vec<Token>> {
             'y' | 'Y' | 'm' | 'M' | 'd' | 'D' | 'h' | 'H' | 's' | 'S' => {
                 let target = u8::try_from(ch).ok()?;
                 let mut width = 0_usize;
-                while rest.as_bytes().get(width) == Some(&target) {
+                while rest
+                    .as_bytes()
+                    .get(width)
+                    .is_some_and(|byte| byte.eq_ignore_ascii_case(&target))
+                {
                     width += 1;
                 }
                 tokens.push(Token::DateToken(rest[..width].to_owned()));
