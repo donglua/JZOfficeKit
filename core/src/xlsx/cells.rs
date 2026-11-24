@@ -66,8 +66,36 @@ impl Workbook {
             }
             "str" | "e" => cell.text = raw.to_owned(),
             "d" => {
-                cell.text = raw.to_owned();
-                document.warn("ISO date cells are displayed as stored without number formatting");
+                // ISO 8601 日期单元格：先换算为工作表基准日序列号，再按单元格样式渲染。
+                // 未指定格式时按是否含时间选择默认模板，使其与序列号日期一致地右对齐。
+                if let Some((serial, has_time)) = super::dates::iso_to_serial(raw, self.date1904) {
+                    let index = usize::try_from(cell.style)
+                        .map_err(|_| Error::Invalid("Invalid style index"))?;
+                    let code = self.styles[index].format.as_deref();
+                    let effective = match code {
+                        None | Some("General" | "general" | "@") => Some(if has_time {
+                            "yyyy-mm-dd hh:mm:ss"
+                        } else {
+                            "yyyy-mm-dd"
+                        }),
+                        Some(other) => Some(other),
+                    };
+                    match effective.and_then(|code| format::display(&serial, code, self.date1904)) {
+                        Some(text) => {
+                            cell.text = text;
+                            cell.numeric = true;
+                        }
+                        None => {
+                            document.warn(
+                                "Unsupported number format or precision; raw numeric value retained",
+                            );
+                            cell.text = raw.to_owned();
+                        }
+                    }
+                } else {
+                    cell.text = raw.to_owned();
+                    document.warn("Invalid ISO date cell; raw value retained");
+                }
             }
             "" | "n" => {
                 if !raw.is_empty() {
