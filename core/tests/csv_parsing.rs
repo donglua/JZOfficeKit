@@ -54,13 +54,12 @@ fn parses_standard_rfc4180_csv_with_quotes_newlines_and_numbers() -> TestResult 
 
 #[test]
 fn parses_gbk_gb18030_csv_without_bom() -> TestResult {
-    // 使用 GB18030 编码中文表格（国内 Excel 常见导出格式）
-    let utf8_csv = "城市,销售额,备注\r\n北京,12800,华北核心区域\r\n上海,23500,华东总部\r\n";
-    let (gbk_bytes, _, had_errors) = encoding_rs::GB18030.encode(utf8_csv);
-    assert!(!had_errors);
-    assert!(std::str::from_utf8(&gbk_bytes).is_err());
+    // 使用 GB18030 编码中文表格（国内 Excel 常见导出格式）：
+    // "城市,销售额,备注\r\n北京,12800,华北核心区域\r\n上海,23500,华东总部\r\n"
+    let gbk_bytes: &[u8] = b"\xb3\xc7\xca\xd0,\xcf\xfa\xca\xdb\xb6\xee,\xb1\xb8\xd7\xa2\r\n\xb1\xb1\xbe\xa9,12800,\xbb\xaa\xb1\xb1\xba\xcb\xd0\xc4\xc7\xf8\xd3\xf2\r\n\xc9\xcf\xba\xa3,23500,\xbb\xaa\xb6\xab\xd7\xdc\xb2\xbf\r\n";
+    assert!(std::str::from_utf8(std::hint::black_box(gbk_bytes)).is_err());
 
-    let file = TemporaryFile::new("gbk_chinese.csv", &gbk_bytes)?;
+    let file = TemporaryFile::new("gbk_chinese.csv", gbk_bytes)?;
     let doc = parse_path(&file.path)?;
 
     assert!(doc.warnings.is_empty(), "{:?}", doc.warnings);

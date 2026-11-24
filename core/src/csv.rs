@@ -220,12 +220,11 @@ fn decode_text(
         } else {
             rest.len()
         };
-        let (cow, had_errors) =
-            encoding_rs::UTF_16LE.decode_without_bom_handling(&rest[..even_len]);
+        let (decoded, had_errors) = crate::text_encoding::decode_utf16_le(&rest[..even_len]);
         if had_errors {
             document.warn("Invalid UTF-16LE byte sequences were replaced");
         }
-        return Ok(cow.into_owned());
+        return Ok(decoded);
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
         let even_len = if allow_truncated_tail {
@@ -233,12 +232,11 @@ fn decode_text(
         } else {
             rest.len()
         };
-        let (cow, had_errors) =
-            encoding_rs::UTF_16BE.decode_without_bom_handling(&rest[..even_len]);
+        let (decoded, had_errors) = crate::text_encoding::decode_utf16_be(&rest[..even_len]);
         if had_errors {
             document.warn("Invalid UTF-16BE byte sequences were replaced");
         }
-        return Ok(cow.into_owned());
+        return Ok(decoded);
     }
 
     validate_not_binary(bytes)?;
@@ -251,7 +249,7 @@ fn decode_text(
         Err(_) => {}
     }
 
-    let (cow, had_errors) = encoding_rs::GB18030.decode_without_bom_handling(bytes);
+    let (cow, had_errors) = crate::text_encoding::decode_gb18030(bytes);
     if had_errors {
         document.warn("Non-UTF-8 characters were decoded with fallback replacements");
     }

@@ -10,6 +10,7 @@ mod parse_cache;
 mod pptx;
 pub mod search;
 pub mod spreadsheet;
+mod text_encoding;
 mod xlsx;
 mod xml;
 mod zip_directory;
