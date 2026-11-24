@@ -636,6 +636,15 @@ export struct OfficePreviewView {
   onPageChange?: (pageNumber: number, pageCount: number) => void;
 
   private rawDocument: model.OfficeDocument | null = null;
+  /**
+   * 文档级图片仓库，供 XLSX 浮动图片按需异步加载。
+   *
+   * <p>普通属性（非 @Prop）：`ImageStore` 持有 PixelMap 与引用计数，深拷贝会复制出互不相认的
+   * 第二个实例并让 LRU 预算与引用计数同时失效（`AGENT.md` §3）。DOCX / PPTX 子视图各自持有
+   * 一份同类实例，`ImageStore.activePathRefs` 本身就是按路径多实例安全共享设计的，
+   * 因此这里为 XLSX 单独持有一份不会与它们互相干扰。
+   */
+  private imageStore: ImageStore = new ImageStore('');
   @State private docRevision: number = 0;
   @State isLoading: boolean = true;
   @State errorMessage: string = '';
@@ -830,6 +839,7 @@ export struct OfficePreviewView {
     this.bindController();
     if (this.preloadedDoc) {
       this.isLoading = false;
+      this.resetImageStore();
       this.publishLoadedDocument(this.preloadedDoc);
       return;
     }
@@ -840,6 +850,9 @@ export struct OfficePreviewView {
 
   aboutToDisappear(): void {
     this.loadGeneration++;
+    // 归还整份文档的图片缓存引用，并让 package_cache 可逐出该包
+    this.imageStore.release();
+    this.imageStore = new ImageStore('');
     this.rawDocument = null;
     this.docRevision++;
     this.childGetZoom = null;
@@ -884,10 +897,17 @@ export struct OfficePreviewView {
     }
   }
 
+  /** 重建图片仓库：旧实例的部件路径属于上一份文档，必须释放后再换新 */
+  private resetImageStore(): void {
+    this.imageStore.release();
+    this.imageStore = new ImageStore(this.filePath);
+  }
+
   private async loadDocument(path: string): Promise<void> {
     const token = ++this.loadGeneration;
     this.isLoading = true;
     this.errorMessage = '';
+    this.resetImageStore();
     this.rawDocument = null;
     this.docRevision++;
     this.childGetZoom = null;
@@ -993,6 +1013,9 @@ export struct OfficePreviewView {
         } else if (this.rawDocument.kind === 'XLSX') {
           SpreadsheetView({
             document: this.rawDocument,
+            // 透传当前文档的 XLSX 图片仓库；普通属性避免深拷贝 PixelMap 与引用计数。
+            // DOCX/PPTX 子视图仍各自持有独立实例，仅复用同一 ImageStore 实现。
+            imageStore: this.imageStore,
             searchMatches: this.searchMatches,
             currentMatchIndex: this.currentMatchIndex,
             onSheetChange: (sheetNumber: number, sheetCount: number): void => {

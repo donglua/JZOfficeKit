@@ -26,6 +26,20 @@ import type {
   ScrollAvoidInput,
   ScrollTarget
 } from '../../viewer-ohos/src/main/ets/render/SheetFreeze.ts';
+import {
+  DEFAULT_MAX_IMAGE_PIXELS,
+  DEFAULT_MIN_IMAGE_PIXELS,
+  collectVisibleImageParts,
+  intersectsElementDocClip,
+  resolveElementDocBounds,
+  resolveFrameDocClips,
+  resolveImagePixels
+} from '../../viewer-ohos/src/main/ets/render/SheetImageParts.ts';
+import type {
+  ElementClipRect,
+  SheetElementBox,
+  VisibleImagePart
+} from '../../viewer-ohos/src/main/ets/render/SheetImageParts.ts';
 
 const HEADER_WIDTH = 42;
 const HEADER_HEIGHT = 22;
@@ -721,7 +735,293 @@ expectEqual(scaledTarget.offsetY, -61, '缩放 2 倍时垂直居中按缩放换�
 expectTrue(FREEZE_LINE_COLOR === '#9aa5b1', '冻结分割线颜色为 #9aa5b1');
 
 // ---------------------------------------------------------------------------
-// 7. 接入点静态检查：确认 SpreadsheetView 与 OfficeModel 的冻结接入完整
+// 7. Sheet.elements 图片：transform 外接框、象限可见性判定与帧加载集合
+// ---------------------------------------------------------------------------
+
+/** 构造一个 Sheet 浮动元素，缺省为未旋转的矩形；transform 按 [a,b,c,d,tx,ty] 给出 */
+function elementBox(patch: Partial<SheetElementBox> & { type: string }): SheetElementBox {
+  return {
+    type: patch.type,
+    x: patch.x ?? 0,
+    y: patch.y ?? 0,
+    width: patch.width ?? 100,
+    height: patch.height ?? 50,
+    transform: patch.transform,
+    stroke: patch.stroke ?? 0,
+    strokeWidth: patch.strokeWidth ?? 1,
+    textWrap: patch.textWrap,
+    image: patch.image
+  };
+}
+
+/** 生成绕 (cx, cy) 旋转 deg 度的变换矩阵，与 core 的 `element_transform` 烘焙结果同构 */
+function rotationMatrix(deg: number, cx: number, cy: number): number[] {
+  const rad = deg * Math.PI / 180;
+  const snappedSin = Math.abs(Math.sin(rad)) <= 1 / 65536 ? 0 : Math.sin(rad);
+  const cos = Math.abs(Math.cos(rad)) <= 1 / 65536 ? 0 : Math.cos(rad);
+  // 绕中心旋转：平移到中心 -> 旋转 -> 平移回原点（Canvas 的 rotate 语义）
+  return [
+    cos,
+    snappedSin,
+    -snappedSin,
+    cos,
+    snappedSin * cy + (1 - cos) * cx,
+    -snappedSin * cx + (1 - cos) * cy
+  ];
+}
+
+function expectBounds(actual: ElementClipRect, left: number, top: number, right: number, bottom: number,
+  message: string): void {
+  checks++;
+  const mismatch =
+    Math.abs(actual.left - left) > 1e-6 ||
+    Math.abs(actual.top - top) > 1e-6 ||
+    Math.abs(actual.right - right) > 1e-6 ||
+    Math.abs(actual.bottom - bottom) > 1e-6;
+  if (mismatch) {
+    throw new Error(
+      `${message}: 期望 {l:${left}, t:${top}, r:${right}, b:${bottom}}，` +
+      `实际 {l:${actual.left}, t:${actual.top}, r:${actual.right}, b:${actual.bottom}}`
+    );
+  }
+}
+
+function expectParts(actual: VisibleImagePart[], expected: string[], message: string): void {
+  checks++;
+  const actualParts = actual.map((p) => p.part).join(',');
+  const expectedParts = expected.join(',');
+  if (actualParts !== expectedParts) {
+    throw new Error(`${message}: 期望 [${expectedParts}]，实际 [${actualParts}]`);
+  }
+}
+
+// 预算常量：与 RenderUtils.DEFAULT_MAX_PIXELS / ImageStore 的 8MP 预算保持同一量级
+expectEqual(DEFAULT_MIN_IMAGE_PIXELS, 4096, '单部件解码像素下限为 64×64');
+expectEqual(DEFAULT_MAX_IMAGE_PIXELS, 4_000_000, '单部件解码像素上限为 4MP');
+
+// 未旋转：外接框等于 (x, y, w, h)
+expectBounds(resolveElementDocBounds(elementBox({ type: 'IMAGE', x: 10, y: 20, width: 80, height: 40 })),
+  10, 20, 90, 60, '未旋转元素的外接框等于自身矩形');
+
+// 90° 旋转：100×50 绕中心旋转后外接框变成 50×100，中心不变
+const rotated90 = elementBox({
+  type: 'IMAGE',
+  x: 0,
+  y: 0,
+  width: 100,
+  height: 50,
+  transform: rotationMatrix(90, 50, 25),
+  image: 'xl/media/image1.png'
+});
+const rotated90Bounds = resolveElementDocBounds(rotated90);
+// 元素中心为 (50, 25)，宽高互换后外接框为 50×100 且仍以该中心对称 => y 从 -25 到 75
+expectBounds(rotated90Bounds, 25, -25, 75, 75, '90° 旋转后外接框宽高互换且中心不变');
+
+// 旋转前的外接框是 [0,0,100,50]；旋转后纵向扩展到 [0,100]，因此仅当裁剪区落在扩展后的
+// 纵向范围时才可见。这正是改造前按未旋转外接框判定会误剔除的场景。
+const clipBelowRotated = { left: 30, top: 60, right: 70, bottom: 90 };
+expectBool(intersectsElementDocClip(rotated90, clipBelowRotated), true,
+  '90° 旋转图片与下方的裁剪区相交（未旋转外接框判定会误判为不可见）');
+expectBool(intersectsElementDocClip(elementBox({ type: 'IMAGE', x: 0, y: 0, width: 100, height: 50 }),
+  clipBelowRotated), false,
+  '未旋转时同一裁剪区不相交，确认上述判定差异确实来自 transform');
+
+// 90° 旋转图片跨越冻结边界：冻结列区 [0, 42] 与滚动区 [42, 400] 各取一段
+const frozenColClip = { left: 0, top: 0, right: 42, bottom: 300 };
+const scrollClip = { left: 42, top: 0, right: 400, bottom: 300 };
+expectBool(intersectsElementDocClip(rotated90, frozenColClip), true,
+  '90° 旋转图片跨越冻结列边界时在冻结列象限仍判定为可见');
+expectBool(intersectsElementDocClip(rotated90, scrollClip), true,
+  '90° 旋转图片跨越冻结列边界时在滚动象限同样判定为可见');
+
+// 完全落在冻结列区内的窄元素不应被滚动区误判为可见
+const narrowInFrozen = elementBox({ type: 'IMAGE', x: 4, y: 10, width: 30, height: 30, image: 'p.png' });
+expectBool(intersectsElementDocClip(narrowInFrozen, frozenColClip), true, '冻结列区内的图片在冻结列象限可见');
+expectBool(intersectsElementDocClip(narrowInFrozen, scrollClip), false, '冻结列区内的图片在滚动象限不可见');
+
+// 翻转（flipH）：d 取负号后外接框不变，但仍在原范围内，用于确认符号不影响包围盒
+const flipped = elementBox({
+  type: 'IMAGE',
+  x: 0,
+  y: 0,
+  width: 100,
+  height: 50,
+  transform: [-1, 0, 0, 1, 100, 0],
+  image: 'p.png'
+});
+expectBounds(resolveElementDocBounds(flipped), 0, 0, 100, 50, '水平翻转不改变外接框范围');
+
+// 缩放预算：.5x / 1x / 2x 下按屏幕投影面积 4 倍计算并钳位
+expectEqual(resolveImagePixels(elementBox({ type: 'IMAGE', width: 1000, height: 1000 }), 1),
+  4_000_000, '1000×1000 元素在 1x 下预算钳位到 4MP 上限');
+expectEqual(resolveImagePixels(elementBox({ type: 'IMAGE', width: 10, height: 10 }), 1),
+  4096, '极小元素在 1x 下预算钳位到 64×64 下限');
+expectEqual(resolveImagePixels(elementBox({ type: 'IMAGE', width: 100, height: 100 }), 2),
+  160_000, '100×100 元素在 2x 下按投影面积 4 倍得到 160000 像素');
+expectEqual(resolveImagePixels(elementBox({ type: 'IMAGE', width: 100, height: 100 }), 1),
+  40_000, '100×100 元素在 1x 下按投影面积 4 倍得到 40000 像素');
+expectEqual(resolveImagePixels(elementBox({ type: 'IMAGE', width: 100, height: 100 }), 0),
+  40_000, '缩放非法时按 1x 处理');
+expectEqual(resolveImagePixels(elementBox({ type: 'IMAGE', width: 100, height: 100 }), Number.NaN),
+  40_000, '缩放为 NaN 时同样按 1x 处理');
+expectEqual(resolveImagePixels(elementBox({ type: 'IMAGE', width: 100, height: 100 }), 1, 2),
+  160_000, '2 倍像素密度下宽高分别乘 2，总预算包含 density²');
+expectEqual(resolveImagePixels(elementBox({ type: 'IMAGE', width: 100, height: 100 }), 1, 0),
+  40_000, '像素密度非法时回退为 1');
+expectEqual(collectVisibleImageParts({
+  elements: [elementBox({ type: 'IMAGE', x: 10, y: 10, width: 100, height: 100, image: 'density.png' })],
+  clips: [{ left: 0, top: 0, right: 400, bottom: 300 }],
+  scale: 1,
+  pixelRatio: 2
+})[0].desiredPixels, 160_000, '四象限图片收集透传物理像素密度');
+
+// 四象限裁剪区反算：与 SheetFreeze.resolveQuadrantDocClip 完全一致
+const quadForClips = resolveFreezeQuadrants(quadrantInput({
+  offsetX: -30,
+  offsetY: -20,
+  frozenDataW: 60,
+  frozenDataH: 40,
+  effFrozenRows: 2,
+  effFrozenCols: 1
+}));
+const frameClips = resolveFrameDocClips(quadForClips, HEADER_WIDTH, HEADER_HEIGHT, 1);
+checks++;
+if (frameClips.length !== quadForClips.length) {
+  throw new Error(`象限裁剪区反算数量应等于象限数，期望 ${quadForClips.length}，实际 ${frameClips.length}`);
+}
+for (let i = 0; i < quadForClips.length; i++) {
+  const reference = resolveQuadrantDocClip(quadForClips[i], HEADER_WIDTH, HEADER_HEIGHT, 1);
+  expectBounds(frameClips[i], reference.left, reference.top, reference.right, reference.bottom,
+    `第 ${i} 个象限的文档裁剪区与 resolveQuadrantDocClip 一致`);
+}
+// 空象限（尺寸非正）不产生裁剪区
+expectEqual(resolveFrameDocClips(
+  resolveFreezeQuadrants(quadrantInput({ bodyRight: HEADER_WIDTH, bodyBottom: HEADER_HEIGHT }))
+    .filter((q) => q.clip.width > 0 && q.clip.height > 0),
+  HEADER_WIDTH, HEADER_HEIGHT, 1).length, 0, '无可见象限时不产生文档裁剪区');
+
+// 帧加载集合：滚动区视口外的图片必须被排除
+const viewportClips = [{ left: 0, top: 0, right: 400, bottom: 300 }];
+const insideViewport = elementBox({ type: 'IMAGE', x: 100, y: 100, width: 80, height: 40, image: 'a.png' });
+const outsideViewport = elementBox({ type: 'IMAGE', x: 900, y: 1200, width: 80, height: 40, image: 'b.png' });
+const visibleParts = collectVisibleImageParts({
+  elements: [insideViewport, outsideViewport],
+  clips: viewportClips,
+  scale: 1
+});
+expectParts(visibleParts, ['a.png'], '位于滚动视口外的图片不进入当前帧加载集合');
+
+// 视口内重复引用同一部件时按路径去重，预算取最大值
+const dupSmall = elementBox({ type: 'IMAGE', x: 10, y: 10, width: 20, height: 20, image: 'dup.png' });
+const dupLarge = elementBox({ type: 'IMAGE', x: 100, y: 100, width: 200, height: 200, image: 'dup.png' });
+const dedupedParts = collectVisibleImageParts({
+  elements: [dupSmall, dupLarge],
+  clips: viewportClips,
+  scale: 1
+});
+expectParts(dedupedParts, ['dup.png'], '同一部件在一帧内按路径去重');
+expectEqual(dedupedParts.length === 1 ? dedupedParts[0].desiredPixels : -1,
+  resolveImagePixels(dupLarge, 1), '去重后解码预算取各次出现的最大值');
+
+// 非 IMAGE 元素（图表矢量 / 形状 / 文本）不产生图片部件
+const mixedParts = collectVisibleImageParts({
+  elements: [
+    elementBox({ type: 'RECT', x: 10, y: 10, width: 50, height: 50 }),
+    elementBox({ type: 'PATH', x: 10, y: 10, width: 50, height: 50 }),
+    elementBox({ type: 'TEXT', x: 10, y: 10, width: 50, height: 50 }),
+    elementBox({ type: 'IMAGE', x: 10, y: 10, width: 50, height: 50, image: 'only.png' })
+  ],
+  clips: viewportClips,
+  scale: 1
+});
+expectParts(mixedParts, ['only.png'], '只有 IMAGE 元素参与图片部件收集');
+
+// 90° 旋转图片跨越冻结边界：冻结列 / 滚动两个象限都必须请求该部件
+const rotatedAcrossFreeze = elementBox({
+  type: 'IMAGE',
+  x: 20,
+  y: 100,
+  width: 100,
+  height: 50,
+  // 局部中心 (50,25) 旋转 90° 后再平移 (20,100)：外接框为 [45,75,95,175]
+  transform: [0, 1, -1, 0, 95, 75],
+  image: 'cross.png'
+});
+expectBounds(resolveElementDocBounds(rotatedAcrossFreeze), 45, 75, 95, 175,
+  '跨冻结边界旋转图片的完整 transform 外接框');
+const freezeClips = resolveFrameDocClips(
+  resolveFreezeQuadrants(quadrantInput({
+    offsetX: -30,
+    offsetY: -20,
+    frozenDataW: 60,
+    frozenDataH: 40,
+    effFrozenRows: 2,
+    effFrozenCols: 1
+  })),
+  HEADER_WIDTH, HEADER_HEIGHT, 1
+);
+expectParts(collectVisibleImageParts({
+  elements: [rotatedAcrossFreeze],
+  clips: freezeClips,
+  scale: 1
+}), ['cross.png'], '90° 旋转图片跨越冻结边界时仍被纳入帧加载集合');
+const rotatedFreezeQuadrants = resolveFreezeQuadrants(quadrantInput({
+  offsetX: -30,
+  offsetY: -20,
+  frozenDataW: 60,
+  frozenDataH: 40,
+  effFrozenRows: 2,
+  effFrozenCols: 1
+}));
+for (let i = 0; i < freezeClips.length; i++) {
+  const quadrant = rotatedFreezeQuadrants[i];
+  const expectedHits = quadrant.kind === 'scroll' || quadrant.kind === 'frozenCols' ? 1 : 0;
+  expectEqual(collectVisibleImageParts({
+    elements: [rotatedAcrossFreeze],
+    clips: [freezeClips[i]],
+    scale: 1
+  }).length, expectedHits, `旋转图片只在实际相交的 ${quadrant.kind} 象限进入加载集合`);
+}
+
+// 四象限齐全时，完全落在滚动区之外的图片不应被冻结象限「捞回」
+const frozenOnlyClip = resolveFrameDocClips(
+  resolveFreezeQuadrants(quadrantInput({
+    offsetX: -30,
+    offsetY: -20,
+    frozenDataW: 60,
+    frozenDataH: 40,
+    effFrozenRows: 2,
+    effFrozenCols: 1
+  })),
+  HEADER_WIDTH, HEADER_HEIGHT, 1
+);
+expectParts(collectVisibleImageParts({
+  elements: [elementBox({ type: 'IMAGE', x: -2000, y: -2000, width: 50, height: 50, image: 'far.png' })],
+  clips: frozenOnlyClip,
+  scale: 1
+}), [], '远离视口的图片在所有象限之外，加载集合为空');
+
+// 空裁剪区（本帧无可见象限）与空元素列表都必须安全返回空集合
+expectEqual(collectVisibleImageParts({ elements: [insideViewport], clips: [], scale: 1 }).length, 0,
+  '无可见象限时加载集合为空');
+expectEqual(collectVisibleImageParts({ elements: [], clips: viewportClips, scale: 1 }).length, 0,
+  '无浮动元素时加载集合为空');
+// IMAGE 元素缺少 image 部件（异常模型）时跳过，不产生空字符串请求
+expectEqual(collectVisibleImageParts({
+  elements: [elementBox({ type: 'IMAGE', x: 10, y: 10, width: 50, height: 50 }),
+    elementBox({ type: 'IMAGE', x: 10, y: 10, width: 50, height: 50, image: '' })],
+  clips: viewportClips,
+  scale: 1
+}).length, 0, '缺少图片部件的 IMAGE 元素不产生加载请求');
+
+// 预算随缩放提升：同一元素在 2x 下的解码预算必须高于 1x
+checks++;
+if (resolveImagePixels(insideViewport, 2) <= resolveImagePixels(insideViewport, 1)) {
+  throw new Error('缩放提升后解码预算必须随之提高，否则放大后图片不会升级清晰度');
+}
+
+// ---------------------------------------------------------------------------
+// 8. 接入点静态检查：确认 SpreadsheetView 与 OfficeModel 的冻结接入完整
 // ---------------------------------------------------------------------------
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -781,11 +1081,63 @@ if (!/elements\?: Element\[\];/.test(modelSource)) {
 }
 
 checks++;
-if (!viewSource.includes('this.drawSheetElements(ctx, sheet, quadrant, s);') ||
+if (!viewSource.includes('this.drawSheetElements(ctx, sheet, quadrant, s, frameImageBudgets);') ||
   !viewSource.includes('ctx.translate(HEADER_WIDTH + quadrant.offsetX, HEADER_HEIGHT + quadrant.offsetY);') ||
   !viewSource.includes('ctx.scale(s, s);') ||
-  !viewSource.includes('CanvasElementDrawer.drawElement(ctx, element);')) {
+  !viewSource.includes('CanvasElementDrawer.drawElement(ctx, element, imageCache);')) {
   throw new Error('SpreadsheetView 未按冻结象限的 gutter / offset / scale 绘制 Sheet.elements');
+}
+
+// 图片缓存必须透传给通用 Element 绘制，否则 IMAGE 元素只会画出占位灰块
+checks++;
+if (!viewSource.includes('const imageCache = this.imageStore ? this.imageStore.cache : undefined;')) {
+  throw new Error('SpreadsheetView.drawSheetElements 未把 ImageStore 缓存透传给 drawElement');
+}
+
+// 四象限帧末必须做一次「释放离开视口 / 加载新进入视口」的差集同步
+checks++;
+if (!viewSource.includes('this.syncVisibleImages(frameImageBudgets);') ||
+  !/private syncVisibleImages\(frameImageBudgets: Map<string, number>\): void/.test(viewSource)) {
+  throw new Error('SpreadsheetView 缺少帧末可见图片同步入口');
+}
+
+checks++;
+if (!viewSource.includes('store.releasePart(part);') ||
+  !viewSource.includes('store.acquire(part);') ||
+  !viewSource.includes('store.needsLoad(part, desiredPixels)') ||
+  !viewSource.includes('store.load(part, desiredPixels).then(')) {
+  throw new Error('SpreadsheetView 未按 ImageStore 的 acquire/releasePart/needsLoad/load 契约维护图片引用');
+}
+
+// 切表、文档切换与销毁都必须归还全部图片引用
+checks++;
+if ((viewSource.match(/this\.releaseActiveImages\(\);/g) ?? []).length < 3) {
+  throw new Error('SpreadsheetView 未在切表 / 换文档 / 销毁三处释放图片引用');
+}
+
+checks++;
+if (!viewSource.includes('this.isDisposed = true;') ||
+  !/private releaseActiveImages\(\): void/.test(viewSource)) {
+  throw new Error('SpreadsheetView 缺少销毁标记或图片整体释放入口');
+}
+
+// 图片仓库必须是普通属性而非 @Prop（@Prop 会深拷贝 PixelMap 与引用计数）
+checks++;
+if (!/\n  imageStore: ImageStore \| null = null;/.test(viewSource) ||
+  /@Prop[^\n]*imageStore/.test(viewSource)) {
+  throw new Error('SpreadsheetView.imageStore 必须是普通属性 imageStore: ImageStore | null = null');
+}
+
+// 换文档时引用必须归还给实际 acquire 的旧仓库；旧代际回调不得删除新任务的加载标记
+checks++;
+if (!viewSource.includes('const store = this.activeImageStore;') ||
+  (viewSource.match(/if \(this\.activeImageStore !== store \|\| this\.imageGeneration !== generation\) return;/g) ?? []).length < 2) {
+  throw new Error('SpreadsheetView 图片加载缺少仓库身份 / 代际竞态保护');
+}
+
+checks++;
+if (!viewSource.includes('resolveImagePixels(element, safeScale, vp2px(1))')) {
+  throw new Error('SpreadsheetView 图片像素预算未包含物理像素密度');
 }
 
 checks++;
@@ -801,10 +1153,55 @@ if (!thumbnailSource.includes('const elements = sheet.elements ?? [];') ||
   throw new Error('OfficeThumbnail 未在正文 clip 内复用 Sheet.elements 绘制');
 }
 
+// 缩略图必须收集首屏可见图片、用临时 ImageStore 预加载并在 finally 中释放
 checks++;
-if (!viewSource.includes('SpreadsheetView.intersectsElementClip(element, clipLeft, clipTop, clipRight, clipBottom)') ||
-  !/private static intersectsElementClip\(/.test(viewSource)) {
+if (!thumbnailSource.includes('async function renderXlsxThumbnail(') ||
+  !thumbnailSource.includes('const parts = collectVisibleImageParts({')) {
+  throw new Error('OfficeThumbnail.renderXlsxThumbnail 未收集首屏可见图片部件');
+}
+
+checks++;
+if (!thumbnailSource.includes('const budget = Math.floor(4_000_000 / Math.max(1, parts.length));') ||
+  !thumbnailSource.includes('await imageStore.load(part.part, budget);') ||
+  !thumbnailSource.includes('CanvasElementDrawer.drawElement(ctx, element, imageStore.cache);')) {
+  throw new Error('OfficeThumbnail 未按 4MP / 部件数预算预加载或未把缓存传给 drawElement');
+}
+
+checks++;
+if (!/const imageStore = new ImageStore\(filePath\);\s*try \{[\s\S]*?\} finally \{\s*imageStore\.release\(\);/.test(thumbnailSource)) {
+  throw new Error('OfficeThumbnail 临时 ImageStore 未在 finally 中 release');
+}
+
+checks++;
+if (!viewSource.includes('SpreadsheetView.intersectsElementClip(element, clip)') ||
+  !/private static intersectsElementClip\(element: model\.Element, clip: ElementClipRect\): boolean/.test(viewSource)) {
   throw new Error('SpreadsheetView 浮动元素缺少按当前象限裁剪区剔除离屏元素的逻辑');
+}
+
+// 裁剪判定必须复用 SheetImageParts 的 transform 外接框实现（与纯 TS 用例共用同一份逻辑）
+checks++;
+if (!viewSource.includes('return intersectsElementDocClip(element, clip);')) {
+  throw new Error('SpreadsheetView.intersectsElementClip 未复用 SheetImageParts.intersectsElementDocClip');
+}
+
+// 9. OfficePreviewView 必须把文档级 ImageStore 透传给 SpreadsheetView（普通属性，非 @Prop）
+const previewSource = readFileSync(resolve(root, 'viewer-ohos/src/main/ets/render/OfficePreviewView.ets'), 'utf8');
+
+checks++;
+if (!/SpreadsheetView\(\{[\s\S]*?imageStore: this\.imageStore,[\s\S]*?\}\)/.test(previewSource)) {
+  throw new Error('OfficePreviewView 未把 imageStore 透传给 SpreadsheetView');
+}
+
+checks++;
+if (/@Prop[^\n]*imageStore/.test(previewSource)) {
+  throw new Error('OfficePreviewView 的 imageStore 不得使用 @Prop（会深拷贝 PixelMap 与引用计数）');
+}
+
+// 文档切换与销毁时必须释放图片仓库，否则 package_cache 无法逐出旧包
+checks++;
+if (!/this\.imageStore\.release\(\);/.test(previewSource) ||
+  !/private resetImageStore\(\): void/.test(previewSource)) {
+  throw new Error('OfficePreviewView 缺少 imageStore 释放 / 重建入口');
 }
 
 console.log(`Sheet freeze checks passed: ${checks}`);

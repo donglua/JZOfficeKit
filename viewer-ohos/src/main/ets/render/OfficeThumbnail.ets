@@ -4,6 +4,7 @@ import { NativeCore } from '../core/NativeCore';
 import { CanvasElementDrawer, WrapObstacle } from './CanvasElementDrawer';
 import { ImageStore } from './ImageStore';
 import { RenderUtils } from './RenderUtils';
+import { ElementClipRect, collectVisibleImageParts } from './SheetImageParts';
 
 /**
  * 鸿蒙端无界面（Offscreen）Office 文档缩略图/封面生成器
@@ -34,7 +35,7 @@ export async function renderOfficeThumbnail(
   } else if (doc.kind === 'DOCX') {
     return await renderDocxThumbnail(filePath, doc, maxTargetWidth, maxTargetHeight);
   } else if (doc.kind === 'XLSX') {
-    return renderXlsxThumbnail(doc, maxTargetWidth, maxTargetHeight);
+    return await renderXlsxThumbnail(filePath, doc, maxTargetWidth, maxTargetHeight);
   } else {
     throw new Error(`Unsupported document format: ${doc.kind}`);
   }
@@ -329,11 +330,20 @@ function maxThumbObstacleBottom(obstacles: WrapObstacle[]): number {
   return max;
 }
 
-function renderXlsxThumbnail(
+/**
+ * 渲染首个工作表的缩略图。
+ *
+ * <p>浮动图片必须在本函数内自行解码：缩略图是无界面调用，没有 `OfficePreviewView` 的
+ * `ImageStore` 可以借用，因此在首屏视口内先收集可见 `IMAGE` 部件，用临时 `ImageStore`
+ * 按预算顺序 `await imageStore.load(...)`，再交给通用 Element 绘制。临时实例在 `finally`
+ * 中 `release()`，避免它在进程级 `activePathRefs` 里留下引用而让 `package_cache` 无法逐出。
+ */
+async function renderXlsxThumbnail(
+  filePath: string,
   doc: model.OfficeDocument,
   maxW: number,
   maxH: number
-): image.PixelMap {
+): Promise<image.PixelMap> {
   if (!doc.sheets || doc.sheets.length === 0) {
     throw new Error('Spreadsheet has no sheets');
   }
@@ -423,20 +433,58 @@ function renderXlsxThumbnail(
   }
   ctx.stroke();
 
-  // 浮动图表复用通用 Element 绘制；裁剪在正文区，避免覆盖缩略图表头。
+  // 浮动图表与图片复用通用 Element 绘制；裁剪在正文区，避免覆盖缩略图表头。
   const elements = sheet.elements ?? [];
   if (elements.length > 0) {
-    ctx.save();
-    try {
-      ctx.beginPath();
-      ctx.rect(headerW, headerH, Math.max(0, previewW - headerW), Math.max(0, previewH - headerH));
-      ctx.clip();
-      ctx.translate(headerW, headerH);
-      for (const element of elements) {
-        CanvasElementDrawer.drawElement(ctx, element);
+    // 首屏可见范围：正文区在文档坐标下即 (0,0) 到 (previewW - headerW, previewH - headerH)
+    const firstScreen: ElementClipRect = {
+      left: 0,
+      top: 0,
+      right: Math.max(0, previewW - headerW),
+      bottom: Math.max(0, previewH - headerH)
+    };
+    const parts = collectVisibleImageParts({
+      elements: elements,
+      clips: [firstScreen],
+      scale: 1
+    });
+    if (parts.length === 0) {
+      ctx.save();
+      try {
+        ctx.beginPath();
+        ctx.rect(headerW, headerH, Math.max(0, previewW - headerW), Math.max(0, previewH - headerH));
+        ctx.clip();
+        ctx.translate(headerW, headerH);
+        for (const element of elements) {
+          CanvasElementDrawer.drawElement(ctx, element);
+        }
+      } finally {
+        ctx.restore();
       }
-    } finally {
-      ctx.restore();
+    } else {
+      // 临时图片仓库：预算按部件数均分 4MP，保证单张图在缩略图尺寸下也足够清晰
+      const budget = Math.floor(4_000_000 / Math.max(1, parts.length));
+      const imageStore = new ImageStore(filePath);
+      try {
+        for (const part of parts) {
+          imageStore.acquire(part.part);
+          await imageStore.load(part.part, budget);
+        }
+        ctx.save();
+        try {
+          ctx.beginPath();
+          ctx.rect(headerW, headerH, Math.max(0, previewW - headerW), Math.max(0, previewH - headerH));
+          ctx.clip();
+          ctx.translate(headerW, headerH);
+          for (const element of elements) {
+            CanvasElementDrawer.drawElement(ctx, element, imageStore.cache);
+          }
+        } finally {
+          ctx.restore();
+        }
+      } finally {
+        imageStore.release();
+      }
     }
   }
 

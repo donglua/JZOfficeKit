@@ -2,7 +2,13 @@ import { displaySync } from '@kit.ArkGraphics2D';
 import * as model from '../core/OfficeModel';
 import { RenderUtils } from './RenderUtils';
 import { CanvasElementDrawer } from './CanvasElementDrawer';
+import { ImageStore } from './ImageStore';
 import { cellIndentWidth, fittedCellFontSize } from './SheetTextStyle';
+import {
+  ElementClipRect,
+  intersectsElementDocClip,
+  resolveImagePixels
+} from './SheetImageParts';
 import {
   EffectiveFrozen,
   FREEZE_LINE_COLOR,
@@ -435,6 +441,29 @@ export struct SpreadsheetView {
   private cachedSheet: model.Sheet | null = null;
   private cachedLayout: SheetLayoutData | null = null;
 
+  // MARK: - XLSX 工作表浮动图片
+
+  /**
+   * 文档内嵌图片仓库（由 `OfficePreviewView` 传入，复用 DOCX / PPTX 的 ImageStore 实现）。
+   *
+   * <p>使用普通属性而非 `@Prop`：`ImageStore` 持有 PixelMap 与引用计数，`@Prop` 的深拷贝
+   * 会复制出互不相认的第二个实例，导致引用计数与 LRU 预算失效（`AGENT.md` §3）。
+   * 为 null 时（如独立使用本组件而未传入仓库）图片元素退化为占位灰块，其余绘制不受影响。
+   */
+  imageStore: ImageStore | null = null;
+  /** activeImageParts 实际 acquire 的仓库；父视图换文档时不能误向新仓库归还旧引用 */
+  private activeImageStore: ImageStore | null = null;
+  /** 本组件已 acquire 的图片部件，切表 / 销毁时逐一 releasePart，避免 LRU 中被永久钉住 */
+  private activeImageParts: Set<string> = new Set();
+  /** 正在异步解码中的部件，防止同一部件的重复 load 请求堆积 */
+  private loadingImageParts: Set<string> = new Set();
+  /** 组件是否已销毁：销毁后到达的 load 结果不得再触发重绘 */
+  private isDisposed: boolean = false;
+  /** 图片加载代际：切表、换文档或销毁时递增，用于隔离在途 load 回调 */
+  private imageGeneration: number = 0;
+  /** 部件升级为高分辨率后延迟重绘的一拍定时器，合并同帧多次 load 完成 */
+  private imageRedrawTimer: number = -1;
+
   private ensureSheetLayout(sheet: model.Sheet): SheetLayoutData {
     if (this.cachedSheet === sheet && this.cachedLayout) {
       return this.cachedLayout;
@@ -466,6 +495,11 @@ export struct SpreadsheetView {
     this.offsetX = 0;
     this.offsetY = 0;
     this.scaleVal = 1.0;
+    // 组件可能被复用重建：复位销毁标记与图片持有集合
+    this.isDisposed = false;
+    this.activeImageStore = null;
+    this.activeImageParts.clear();
+    this.loadingImageParts.clear();
     if (this.registerControls) {
       this.registerControls(
         (sheetNumber: number): void => {
@@ -1099,6 +1133,8 @@ export struct SpreadsheetView {
     this.offsetX = 0;
     this.offsetY = 0;
     this.scaleVal = 1.0;
+    // 切表后旧表的浮动图片不再显示，立即归还引用；新表图片由下一帧 syncVisibleImages 重新加载
+    this.releaseActiveImages();
     this.redraw();
     if (this.onSheetChange) {
       this.onSheetChange(idx + 1, sheets.length);
@@ -1107,6 +1143,9 @@ export struct SpreadsheetView {
 
   aboutToDisappear(): void {
     this.isReady = false;
+    this.isDisposed = true;
+    // 组件销毁：归还全部图片引用并作废在途解码回调
+    this.releaseActiveImages();
     this.stopFling();
     // 组件销毁时清理选区相关定时器，避免定时器持有已销毁组件的闭包
     this.stopEdgeScroll();
@@ -1392,7 +1431,7 @@ export struct SpreadsheetView {
   }
 
   private redraw(): void {
-    if (!this.isReady) return;
+    if (!this.isReady || this.isDisposed) return;
     if (this.document !== this.lastDocument) {
       this.lastDocument = this.document;
       this.currentSheetIndex = 0;
@@ -1403,12 +1442,17 @@ export struct SpreadsheetView {
       this.cachedLayout = null;
       // 文档重新加载后旧选区的行列号指向另一份数据，必须清除（设计文档 §全局约束）
       this.resetSelection(false);
+      // 新文档的图片部件路径完全不同，旧表已 acquire 的引用必须归还
+      this.releaseActiveImages();
     }
     const sheet = this.getCurrentSheet();
     const ctx = this.context2D;
     const w = this.canvasWidth;
     const h = this.canvasHeight;
+    // 帧局部图片预算表：整帧收集后统一同步引用，空表或绘制失败也必须能释放旧引用。
+    const frameImageBudgets: Map<string, number> = new Map<string, number>();
     if (!sheet || w <= 0 || h <= 0) {
+      this.syncVisibleImages(frameImageBudgets);
       if (this.isReady && (this.canvasWidth <= 0 || this.canvasHeight <= 0) && this.retryCount < 20) {
         this.retryCount++;
         if (this.retryTimer !== -1) {
@@ -1480,8 +1524,9 @@ export struct SpreadsheetView {
         effFrozenCols: frozenColsCount
       });
 
+      // 每个可见 IMAGE 部件记录本帧所需的解码像素；帧末统一做一次集合差集。
       for (const quadrant of quadrants) {
-        this.drawQuadrant(ctx, sheet, layout, quadrant, s);
+        this.drawQuadrant(ctx, sheet, layout, quadrant, s, frameImageBudgets);
       }
 
       // 1.6 绘制全文检索高亮：按象限切片裁剪，滚动区高亮绝不覆盖冻结区
@@ -1624,6 +1669,8 @@ export struct SpreadsheetView {
       this.drawSelectionHandles(ctx);
     } catch (err) {
       console.error(`SpreadsheetView draw failed: ${err}`);
+    } finally {
+      this.syncVisibleImages(frameImageBudgets);
     }
   }
 
@@ -1638,6 +1685,102 @@ export struct SpreadsheetView {
   }
 
   /**
+   * 帧末同步可见图片部件：释放离开视口的引用、为新进入视口的部件 acquire 并异步解码。
+   *
+   * <p>引用计数随视口滚动释放是必须的：原实现（PPTX 侧同类问题）只 acquire 不 release 时，
+   * 浏览过的图片会永久占住 `ImageStore` 的 32 张 / 8MP LRU 预算，长表滚动后无法逐出，
+   * 造成持续内存压力与掉帧。本方法每帧只做集合差集，不触碰 I/O。
+   */
+  private syncVisibleImages(frameImageBudgets: Map<string, number>): void {
+    const store = this.imageStore;
+    // 普通属性可能随父视图换文档而更新。引用必须归还给实际 acquire 的旧仓库，
+    // 不能拿新仓库的同名部件路径做 releasePart。
+    if (this.activeImageStore !== store) {
+      if (this.activeImageStore !== null || this.activeImageParts.size > 0) {
+        this.releaseActiveImages();
+      }
+      this.activeImageStore = store;
+    }
+    if (!store || this.isDisposed) {
+      if (this.activeImageParts.size > 0) this.releaseActiveImages();
+      return;
+    }
+
+    // 1. 离开视口（或切表后不再属于当前表）的部件立即归还引用，让 LRU 可以逐出
+    const stale: string[] = [];
+    this.activeImageParts.forEach((part: string) => {
+      if (!frameImageBudgets.has(part)) {
+        stale.push(part);
+      }
+    });
+    for (const part of stale) {
+      this.activeImageParts.delete(part);
+      store.releasePart(part);
+    }
+
+    // 2. 新进入视口的部件登记引用；已在集合内说明本帧之前就持有，无需重复 acquire
+    frameImageBudgets.forEach((_budget: number, part: string) => {
+      if (!this.activeImageParts.has(part)) {
+        this.activeImageParts.add(part);
+        store.acquire(part);
+      }
+    });
+
+    // 3. 按需异步解码：needsLoad 命中「未缓存」或「采样版清晰度不足」两种情况
+    const generation = this.imageGeneration;
+    frameImageBudgets.forEach((desiredPixels: number, part: string) => {
+      if (this.loadingImageParts.has(part)) return;
+      if (!store.needsLoad(part, desiredPixels)) return;
+      this.loadingImageParts.add(part);
+      store.load(part, desiredPixels).then((): void => {
+        // 旧代际不得删除新任务的 loading 标记。即使本次没有提交新缓存，只要部件仍可见，
+        // 也重绘一次，让 needsLoad 决定是否重试「划出视口后被取消」的解码。
+        if (this.activeImageStore !== store || this.imageGeneration !== generation) return;
+        this.loadingImageParts.delete(part);
+        if (!this.isDisposed && this.activeImageParts.has(part)) {
+          this.scheduleImageRedraw();
+        }
+      }, (err: Error): void => {
+        if (this.activeImageStore !== store || this.imageGeneration !== generation) return;
+        this.loadingImageParts.delete(part);
+        console.warn(`[SpreadsheetView] image load failed for ${part}: ${err}`);
+      });
+    });
+  }
+
+  /** 合并同一帧内多次图片升级的重绘请求，避免逐张图片触发一次整表重绘 */
+  private scheduleImageRedraw(): void {
+    if (this.imageRedrawTimer !== -1 || this.isDisposed || !this.isReady) return;
+    this.imageRedrawTimer = setTimeout(() => {
+      this.imageRedrawTimer = -1;
+      if (!this.isDisposed && this.isReady) {
+        this.redraw();
+      }
+    }, 16);
+  }
+
+  /**
+   * 释放当前持有的全部图片引用并作废在途加载。
+   * 切表与组件销毁都必须调用：前一表的图片既不再显示，也不应继续占用缓存预算。
+   */
+  private releaseActiveImages(): void {
+    const store = this.activeImageStore;
+    this.imageGeneration++;
+    if (this.imageRedrawTimer !== -1) {
+      clearTimeout(this.imageRedrawTimer);
+      this.imageRedrawTimer = -1;
+    }
+    if (store) {
+      this.activeImageParts.forEach((part: string) => {
+        store.releasePart(part);
+      });
+    }
+    this.activeImageStore = null;
+    this.activeImageParts.clear();
+    this.loadingImageParts.clear();
+  }
+
+  /**
    * 绘制单个冻结象限：独立 save -> clip -> 白底 -> 普通单元格 -> 网格线 -> 相交合并单元格 -> 单元格边框 -> restore。
    * 象限的行列范围与屏幕偏移由 SheetFreeze 统一给出，锁定轴的偏移恒为 0，因此冻结区不随对应轴滚动。
    */
@@ -1646,7 +1789,8 @@ export struct SpreadsheetView {
     sheet: model.Sheet,
     layout: SheetLayoutData,
     quadrant: FreezeQuadrant,
-    s: number
+    s: number,
+    frameImageBudgets: Map<string, number>
   ): void {
     if (quadrant.clip.width <= 0 || quadrant.clip.height <= 0) return;
     const rows = layout.rows;
@@ -1813,7 +1957,7 @@ export struct SpreadsheetView {
     }
 
     // 浮动图表与单元格共用同一数据区坐标；每个象限分别平移并由现有 clip 裁剪。
-    this.drawSheetElements(ctx, sheet, quadrant, s);
+    this.drawSheetElements(ctx, sheet, quadrant, s, frameImageBudgets);
 
     ctx.restore();
   }
@@ -1823,64 +1967,52 @@ export struct SpreadsheetView {
     ctx: CanvasRenderingContext2D,
     sheet: model.Sheet,
     quadrant: FreezeQuadrant,
-    s: number
+    s: number,
+    frameImageBudgets: Map<string, number>
   ): void {
     const elements = sheet.elements;
     if (!elements || elements.length === 0) return;
     const safeScale = s > 0 ? s : 1;
-    const clipLeft = (quadrant.clip.x - HEADER_WIDTH - quadrant.offsetX) / safeScale;
-    const clipTop = (quadrant.clip.y - HEADER_HEIGHT - quadrant.offsetY) / safeScale;
-    const clipRight = (quadrant.clip.x + quadrant.clip.width - HEADER_WIDTH - quadrant.offsetX) / safeScale;
-    const clipBottom = (quadrant.clip.y + quadrant.clip.height - HEADER_HEIGHT - quadrant.offsetY) / safeScale;
+    const clip: ElementClipRect = {
+      left: (quadrant.clip.x - HEADER_WIDTH - quadrant.offsetX) / safeScale,
+      top: (quadrant.clip.y - HEADER_HEIGHT - quadrant.offsetY) / safeScale,
+      right: (quadrant.clip.x + quadrant.clip.width - HEADER_WIDTH - quadrant.offsetX) / safeScale,
+      bottom: (quadrant.clip.y + quadrant.clip.height - HEADER_HEIGHT - quadrant.offsetY) / safeScale
+    };
+    // 图片缓存按需透传：为 null（未注入 ImageStore）时 drawElement 退化为灰色占位块
+    const imageCache = this.imageStore ? this.imageStore.cache : undefined;
     ctx.save();
     try {
       ctx.translate(HEADER_WIDTH + quadrant.offsetX, HEADER_HEIGHT + quadrant.offsetY);
       ctx.scale(s, s);
       for (const element of elements) {
-        if (!SpreadsheetView.intersectsElementClip(element, clipLeft, clipTop, clipRight, clipBottom)) {
+        if (!SpreadsheetView.intersectsElementClip(element, clip)) {
           continue;
         }
-        CanvasElementDrawer.drawElement(ctx, element);
+        if (element.type === 'IMAGE' && element.image) {
+          // 记录本帧该部件所需的解码像素预算；同一图片跨象限各画一次时取最大值
+          const budget = resolveImagePixels(element, safeScale, vp2px(1));
+          const previous = frameImageBudgets.get(element.image);
+          if (previous === undefined || budget > previous) {
+            frameImageBudgets.set(element.image, budget);
+          }
+        }
+        CanvasElementDrawer.drawElement(ctx, element, imageCache);
       }
     } finally {
       ctx.restore();
     }
   }
 
-  /** 判断元素在数据区坐标下的外接矩形是否与当前象限可见裁剪区相交 */
-  private static intersectsElementClip(
-    element: model.Element,
-    clipLeft: number,
-    clipTop: number,
-    clipRight: number,
-    clipBottom: number
-  ): boolean {
-    const strokePad = ((element.stroke >>> 24) === 0) ? 0 : Math.max(0.5, element.strokeWidth || 1) / 2;
-    let x0 = -strokePad;
-    let y0 = -strokePad;
-    let x1 = Math.max(0, element.width) + strokePad;
-    let y1 = Math.max(0, element.height) + strokePad;
-    if (element.type === 'TEXT') {
-      const extraX = element.textWrap === false ? 256 : 16;
-      x0 -= extraX;
-      x1 += extraX;
-      y0 -= 64;
-      y1 += 64;
-    }
-    const m = element.transform;
-    let a = 1, b = 0, c = 0, d = 1, tx = element.x || 0, ty = element.y || 0;
-    if (m && m.length >= 6) {
-      a = m[0]; b = m[1]; c = m[2]; d = m[3]; tx = m[4]; ty = m[5];
-    }
-    const px0 = a * x0 + c * y0 + tx, py0 = b * x0 + d * y0 + ty;
-    const px1 = a * x1 + c * y0 + tx, py1 = b * x1 + d * y0 + ty;
-    const px2 = a * x0 + c * y1 + tx, py2 = b * x0 + d * y1 + ty;
-    const px3 = a * x1 + c * y1 + tx, py3 = b * x1 + d * y1 + ty;
-    const minX = Math.min(px0, px1, px2, px3);
-    const minY = Math.min(py0, py1, py2, py3);
-    const maxX = Math.max(px0, px1, px2, px3);
-    const maxY = Math.max(py0, py1, py2, py3);
-    return maxX > clipLeft && minX < clipRight && maxY > clipTop && minY < clipBottom;
+  /**
+   * 判断元素在数据区坐标下的外接矩形是否与当前象限可见裁剪区相交。
+   *
+   * <p>外接矩形由 `SheetImageParts.resolveElementDocBounds` 按 `element.transform` 映射四角顶点后
+   * 取包围盒得出，因此旋转 / 翻转后的图片与形状不会在象限边界被误剔除（设计文档 §5.2）。
+   * 判定逻辑与 `scripts/tests/SheetFreezeChecks.ts` 共用同一份纯函数实现。
+   */
+  private static intersectsElementClip(element: model.Element, clip: ElementClipRect): boolean {
+    return intersectsElementDocClip(element, clip);
   }
 
   /**
