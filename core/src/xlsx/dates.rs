@@ -272,13 +272,10 @@ fn parse_elapsed(inner: &str) -> Option<DatePart> {
 /// 即为分钟；否则为月份。`mmm` 及以上恒为月份名，不参与消歧。
 fn resolve_minutes(parts: &mut [DatePart]) {
     for index in 0..parts.len() {
-        let is_candidate = matches!(
-            parts.get(index),
-            Some(DatePart::Month { width: 1 } | DatePart::Month { width: 2 })
-        );
-        if !is_candidate {
-            continue;
-        }
+        let width = match parts.get(index) {
+            Some(DatePart::Month { width }) if *width == 1 || *width == 2 => *width,
+            _ => continue,
+        };
         let preceded_by_hour = parts
             .get(..index)
             .and_then(|head| head.iter().rev().find(|part| is_temporal(part)))
@@ -291,7 +288,7 @@ fn resolve_minutes(parts: &mut [DatePart]) {
             continue;
         }
         if let Some(slot) = parts.get_mut(index) {
-            *slot = DatePart::Minute { padded: true };
+            *slot = DatePart::Minute { padded: width >= 2 };
         }
     }
 }
@@ -947,8 +944,22 @@ mod tests {
     #[test]
     fn minute_before_second_stays_minute() {
         assert_eq!(display("0.0625", "m:ss", false).as_deref(), Some("30:00"));
+        // 单字母 `m` 作为分钟时不得强制补零，仅 `mm` 补零到两位。
+        assert_eq!(display("0.003472222", "h:m", false).as_deref(), Some("0:5"));
+        assert_eq!(
+            display("0.003472222", "h:mm", false).as_deref(),
+            Some("0:05")
+        );
         // 无小时且无秒相邻时仍是月份。
         assert_eq!(display("45292", "m/d", false).as_deref(), Some("1/1"));
+    }
+
+    #[test]
+    fn mixed_case_date_tokens_merge() {
+        assert_eq!(
+            display("45292", "Yyyy-Mm-Dd", false).as_deref(),
+            Some("2024-01-01")
+        );
     }
 
     #[test]

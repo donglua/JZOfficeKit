@@ -157,6 +157,8 @@ displays! {
     short_meridiem_am: ("0.25", "h:mm A/P", false) => Some("6:00 A");
     lowercase_meridiem: ("0.75", "h:mm am/pm", false) => Some("6:00 pm");
     minute_before_second_disambiguation: ("0.0625", "m:ss", false) => Some("30:00");
+    unpadded_minute_after_hour: ("0.003472222", "h:m", false) => Some("0:5");
+    mixed_case_date_token: ("45292", "Yyyy-Mm-Dd", false) => Some("2024-01-01");
     month_before_second_stays_month: ("45292", "m/d", false) => Some("1/1");
     elapsed_minutes_and_seconds: ("0.0625", "[m]:ss", false) => Some("90:00");
     elapsed_seconds: ("0.0625", "[s]", false) => Some("5400");
