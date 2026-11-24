@@ -10,6 +10,7 @@ import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -86,13 +87,67 @@ public final class OfficeCache {
 
     /** Call on a worker thread. The first use also removes files left by a previous process. */
     public static synchronized Entry create(File appCacheDir) throws IOException {
+        return create(appCacheDir, ".tmp");
+    }
+
+    /**
+     * Call on a worker thread. Preserves supported delimited-text suffixes (`.csv` / `.tsv`)
+     * so native core format routing keeps working on cached files.
+     */
+    public static synchronized Entry create(File appCacheDir, String extension) throws IOException {
         reapUnreachable(true);
         File directory = directory(appCacheDir);
         if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Unable to create document cache");
         if (INITIALIZED.add(directory)) clear(appCacheDir);
-        File file = File.createTempFile("document-", ".tmp", directory);
+        File file = File.createTempFile("document-", normalizeExtension(extension), directory);
         ACTIVE.put(file, 1);
         return new Entry(file);
+    }
+
+    /** Resolve a safe cache file extension from a file name/URL path and optional MIME type. */
+    public static String resolveExtension(String nameOrPath, String mimeType) {
+        if (nameOrPath != null) {
+            String trimmed = nameOrPath.trim();
+            int query = trimmed.indexOf('?');
+            if (query >= 0) trimmed = trimmed.substring(0, query);
+            int fragment = trimmed.indexOf('#');
+            if (fragment >= 0) trimmed = trimmed.substring(0, fragment);
+            String lower = trimmed.toLowerCase(Locale.ROOT);
+            if (lower.endsWith(".csv")) return ".csv";
+            if (lower.endsWith(".tsv")) return ".tsv";
+            if (lower.endsWith(".docx") || lower.endsWith(".pptx") || lower.endsWith(".xlsx")) return ".tmp";
+        }
+        if (mimeType != null) {
+            int semicolon = mimeType.indexOf(';');
+            String mediaType = (semicolon >= 0 ? mimeType.substring(0, semicolon) : mimeType)
+                .trim()
+                .toLowerCase(Locale.ROOT);
+            if ("text/csv".equals(mediaType)
+                || "text/comma-separated-values".equals(mediaType)
+                || "application/csv".equals(mediaType)
+                || "application/x-csv".equals(mediaType)) {
+                return ".csv";
+            }
+            if ("text/tab-separated-values".equals(mediaType)
+                || "application/tab-separated-values".equals(mediaType)
+                || "text/tsv".equals(mediaType)) {
+                return ".tsv";
+            }
+        }
+        return ".tmp";
+    }
+
+    private static String normalizeExtension(String extension) {
+        if (extension == null) return ".tmp";
+        String normalized = extension.trim().toLowerCase(Locale.ROOT);
+        if (".csv".equals(normalized) || "csv".equals(normalized)) return ".csv";
+        if (".tsv".equals(normalized) || "tsv".equals(normalized)) return ".tsv";
+        return ".tmp";
+    }
+
+    private static boolean isCacheFileName(String name) {
+        return name.startsWith("document-")
+            && (name.endsWith(".tmp") || name.endsWith(".csv") || name.endsWith(".tsv"));
     }
 
     /** Call on a worker thread. Active files are retained; other app caches are never traversed. */
@@ -107,7 +162,7 @@ public final class OfficeCache {
         long bytes = 0;
         int deleted = 0, skipped = 0, failed = 0;
         for (File file : files) {
-            if (!file.getName().startsWith("document-") || !file.getName().endsWith(".tmp")) continue;
+            if (!isCacheFileName(file.getName())) continue;
             try {
                 if (!file.equals(file.getCanonicalFile()) || !file.isFile()) continue;
             } catch (IOException error) { failed++; continue; }

@@ -26,6 +26,8 @@ public final class SampleProvider extends ContentProvider {
         if (name != null && name.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
         if (name != null && name.endsWith(".pptx")) return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
         if (name != null && name.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        if (name != null && name.endsWith(".csv")) return "text/csv";
+        if (name != null && name.endsWith(".tsv")) return "text/tab-separated-values";
         return "application/octet-stream";
     }
 

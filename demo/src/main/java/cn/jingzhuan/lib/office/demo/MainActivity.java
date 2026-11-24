@@ -91,7 +91,10 @@ public final class MainActivity extends Activity {
         intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "text/csv",
+            "text/comma-separated-values",
+            "text/tab-separated-values"
         });
         startActivityForResult(intent, PICK_DOCUMENT);
     }

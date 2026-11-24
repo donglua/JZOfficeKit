@@ -21,7 +21,8 @@ public final class OfficeCacheChecks {
             checkRecovery(root.resolve("recovery").toFile());
             checkConcurrentClear(root.resolve("concurrent").toFile());
             checkFailureAndIsolation(root.resolve("failure").toFile());
-            System.out.println("PASS cache: active writes/reads, cleanup counts, repeated clear, process recovery, concurrent clear, scope and failure reporting");
+            checkDelimitedExtensions(root.resolve("extensions").toFile());
+            System.out.println("PASS cache: active writes/reads, cleanup counts, repeated clear, process recovery, concurrent clear, scope, extensions and failure reporting");
         } finally {
             try (java.util.stream.Stream<Path> paths = Files.walk(root)) {
                 paths.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
@@ -127,6 +128,41 @@ public final class OfficeCacheChecks {
             check(Files.exists(unrelated) && Files.exists(foreign) && Files.exists(link), "Do not traverse unrelated files or symbolic links");
             check(entry.getFile().exists(), "Active document unaffected by unrelated files");
         }
+    }
+
+    private static void checkDelimitedExtensions(File root) throws Exception {
+        try (OfficeCache.Entry csv = OfficeCache.create(root, ".csv");
+             OfficeCache.Entry tsv = OfficeCache.create(root, "tsv");
+             OfficeCache.Entry fallback = OfficeCache.create(root, "../evil.exe")) {
+            check(csv.getFile().getName().startsWith("document-") && csv.getFile().getName().endsWith(".csv"),
+                "CSV extension preserved: " + csv.getFile().getName());
+            check(tsv.getFile().getName().startsWith("document-") && tsv.getFile().getName().endsWith(".tsv"),
+                "TSV extension preserved: " + tsv.getFile().getName());
+            check(fallback.getFile().getName().endsWith(".tmp"),
+                "Unsupported extension falls back to .tmp: " + fallback.getFile().getName());
+            Files.write(csv.getFile().toPath(), new byte[] {1, 2});
+            Files.write(tsv.getFile().toPath(), new byte[] {3, 4});
+            check(OfficeCache.clear(root).skippedFiles == 3, "Active CSV/TSV/tmp entries skipped by clear");
+        }
+        File dir = new File(root, "office-preview");
+        Files.write(new File(dir, "document-stale.csv").toPath(), new byte[11]);
+        Files.write(new File(dir, "document-stale.tsv").toPath(), new byte[13]);
+        OfficeCache.ClearResult cleared = OfficeCache.clear(root);
+        check(cleared.deletedFiles == 2 && cleared.deletedBytes == 24 && cleared.failedFiles == 0,
+            "Stale CSV/TSV cache files cleaned up");
+
+        check(".csv".equals(OfficeCache.resolveExtension("https://example.com/a/report.CSV?dl=1#top", null)),
+            "Resolve .csv from URL with query and fragment");
+        check(".tsv".equals(OfficeCache.resolveExtension("/path/metrics.tsv", "text/plain")),
+            "Resolve .tsv from path even with text/plain MIME");
+        check(".tmp".equals(OfficeCache.resolveExtension("report.xlsx", "text/csv")),
+            "Explicit OOXML extension overrides misconfigured CSV MIME");
+        check(".csv".equals(OfficeCache.resolveExtension("export", "text/csv; charset=utf-8")),
+            "Resolve .csv from MIME with charset");
+        check(".tsv".equals(OfficeCache.resolveExtension(null, "text/tab-separated-values")),
+            "Resolve .tsv from MIME");
+        check(".tmp".equals(OfficeCache.resolveExtension("export", "application/octet-stream")),
+            "Unknown name and MIME fall back to .tmp");
     }
 
     private static void check(boolean value, String message) {

@@ -56,6 +56,19 @@ final class OfficeMetadataChecks {
                 throw new AssertionError("Unexpected XLSX metadata: format=" + xlsxMeta.format + ", sheets=" + xlsxMeta.sheetNames);
             }
 
+            File csvFile = File.createTempFile("metadata-check-", ".csv", context.getCacheDir());
+            try {
+                try (FileOutputStream out = new FileOutputStream(csvFile)) {
+                    out.write("City,Sales\nBeijing,100\n".getBytes(StandardCharsets.UTF_8));
+                }
+                OfficeMetadata csvMeta = OfficeMetadata.read(context, Uri.fromFile(csvFile));
+                if (!"XLSX".equals(csvMeta.format) || csvMeta.pageCount != 1 || csvMeta.sheetNames.size() != 1) {
+                    throw new AssertionError("Unexpected CSV metadata: format=" + csvMeta.format + ", pages=" + csvMeta.pageCount);
+                }
+            } finally {
+                csvFile.delete();
+            }
+
             // 3. 异步读取测试
             CountDownLatch latch = new CountDownLatch(1);
             AtomicReference<OfficeMetadata> asyncMeta = new AtomicReference<>();

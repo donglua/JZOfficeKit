@@ -81,7 +81,7 @@ public final class HttpUrlConnectionOfficeDownloader implements RemoteOfficeDown
                 connection.setConnectTimeout(connectTimeout);
                 connection.setReadTimeout(readTimeout);
 
-                connection.setRequestProperty("Accept", "application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/vnd.openxmlformats-officedocument.presentationml.presentation, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/octet-stream");
+                connection.setRequestProperty("Accept", "application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/vnd.openxmlformats-officedocument.presentationml.presentation, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, text/csv, text/tab-separated-values, application/octet-stream");
                 if (sameOrigin(initialUrl, currentUrl)) {
                     for (Map.Entry<String, String> header : request.getHeaders().entrySet()) {
                         connection.setRequestProperty(header.getKey(), header.getValue());

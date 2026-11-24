@@ -1,9 +1,11 @@
 package cn.jingzhuan.lib.office;
 
 import android.content.Context;
+import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
+import android.provider.OpenableColumns;
 import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.File;
@@ -46,7 +48,9 @@ final class OfficePackage implements Closeable {
         if (!"content".equals(scheme) && !"file".equals(scheme)) throw new IOException("Only content:// and file:// URIs are supported");
         OfficeCache.Entry retained = "file".equals(scheme) && uri.getPath() != null
             ? OfficeCache.retain(new File(uri.getPath())) : null;
-        OfficeCache.Entry cache = retained != null ? retained : OfficeCache.create(context.getCacheDir());
+        OfficeCache.Entry cache = retained != null
+            ? retained
+            : OfficeCache.create(context.getCacheDir(), resolveCacheExtension(context, uri));
         File file = cache.getFile();
         boolean complete = false;
         try {
@@ -75,6 +79,28 @@ final class OfficePackage implements Closeable {
                 cache.close();
             }
         }
+    }
+
+    private static String resolveCacheExtension(Context context, Uri uri) {
+        String ext = OfficeCache.resolveExtension(uri.getLastPathSegment(), null);
+        if (!".tmp".equals(ext)) return ext;
+        ext = OfficeCache.resolveExtension(uri.getPath(), null);
+        if (!".tmp".equals(ext)) return ext;
+        if ("content".equals(uri.getScheme())) {
+            String displayName = null;
+            try (Cursor cursor = context.getContentResolver().query(
+                    uri, new String[] { OpenableColumns.DISPLAY_NAME }, null, null, null)) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    displayName = cursor.getString(0);
+                }
+            } catch (RuntimeException ignored) { }
+            String mimeType = null;
+            try {
+                mimeType = context.getContentResolver().getType(uri);
+            } catch (RuntimeException ignored) { }
+            return OfficeCache.resolveExtension(displayName, mimeType);
+        }
+        return ".tmp";
     }
 
     static OfficePackage open(Context context, Uri uri) throws IOException {

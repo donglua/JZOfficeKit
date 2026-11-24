@@ -95,6 +95,7 @@ final class PackageOpeningChecks {
             } finally { Thread.interrupted(); }
             accept(context, source, valid, baseline);
             check(Arrays.equals(DATA, read(unrelated)), "Unrelated cache entry contents preserved");
+            checkDelimitedOpening(context, baseline, log);
             return log.append("PASS Successful reopen after rejection and cancellation; source and cache baseline preserved\n").toString();
         } finally {
             try {
@@ -230,6 +231,30 @@ final class PackageOpeningChecks {
             int count;
             while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
             return output.toByteArray();
+        }
+    }
+
+    private static void checkDelimitedOpening(Context context, Set<String> baseline, StringBuilder log) throws Exception {
+        File csvFile = File.createTempFile("package-opening-", ".csv", context.getCacheDir());
+        File tsvFile = File.createTempFile("package-opening-", ".tsv", context.getCacheDir());
+        try {
+            write(csvFile, "Name,Score\nAlice,98.5\n".getBytes(StandardCharsets.UTF_8));
+            try (OfficePackage pkg = OfficePackage.open(context, Uri.fromFile(csvFile))) {
+                check(pkg.file.getName().endsWith(".csv"), "Cached CSV copy keeps .csv extension");
+                check(pkg.document != null && pkg.document.kind == OfficeDocument.Kind.XLSX && pkg.document.sheets.size() == 1,
+                    "CSV decoded via XLSX sheet model");
+            }
+            write(tsvFile, "Key\tValue\nA,1\t42\n".getBytes(StandardCharsets.UTF_8));
+            try (OfficePackage pkg = OfficePackage.open(context, Uri.fromFile(tsvFile))) {
+                check(pkg.file.getName().endsWith(".tsv"), "Cached TSV copy keeps .tsv extension");
+                check(pkg.document != null && pkg.document.kind == OfficeDocument.Kind.XLSX && pkg.document.sheets.size() == 1,
+                    "TSV decoded via XLSX sheet model");
+            }
+            check(baseline.equals(cached(context)), "CSV/TSV cache entries cleaned on close");
+            log.append("PASS CSV and TSV opened and cleaned cleanly\n");
+        } finally {
+            csvFile.delete();
+            tsvFile.delete();
         }
     }
 

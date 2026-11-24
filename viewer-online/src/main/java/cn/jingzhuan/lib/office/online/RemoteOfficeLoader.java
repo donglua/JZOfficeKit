@@ -9,7 +9,10 @@ import cn.jingzhuan.lib.office.OfficeCache;
 import cn.jingzhuan.lib.office.OfficePreviewView;
 import java.io.Closeable;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -139,12 +142,16 @@ public final class RemoteOfficeLoader implements Closeable {
         boolean transferred = false;
         try {
             if (task.isCancelled()) return;
-            source = OfficeCache.create(cacheDir);
+            source = OfficeCache.create(cacheDir, resolveRequestExtension(request));
             RemoteOfficeDownloader.Result result = downloader.download(request, source.getFile(),
                 (bytes, total) -> main.post(() -> {
                     if (isActive(task) && !task.complete) listener.onProgress(bytes, total);
                 }), task);
             if (task.isCancelled()) return;
+            String resolvedExtension = OfficeCache.resolveExtension(result.getDisplayName(), result.getContentType());
+            if (!".tmp".equals(resolvedExtension) && !source.getFile().getName().endsWith(resolvedExtension)) {
+                source = copyToExtension(cacheDir, source, resolvedExtension, task);
+            }
             OfficeCache.Entry completed = source;
             transferred = main.post(() -> {
                 if (!isActive(task)) { completed.close(); return; }
@@ -190,6 +197,34 @@ public final class RemoteOfficeLoader implements Closeable {
         if (preview != null) preview.removeOnAttachStateChangeListener(attachment);
         preview = null;
         worker.shutdownNow();
+    }
+
+    private static String resolveRequestExtension(RemoteOfficeRequest request) {
+        String ext = OfficeCache.resolveExtension(request.getDisplayName(), null);
+        if (!".tmp".equals(ext)) return ext;
+        return OfficeCache.resolveExtension(request.getUrl().getPath(), null);
+    }
+
+    private static OfficeCache.Entry copyToExtension(File cacheDir, OfficeCache.Entry source,
+            String extension, Task task) throws IOException {
+        OfficeCache.Entry target = OfficeCache.create(cacheDir, extension);
+        boolean complete = false;
+        try (FileInputStream input = new FileInputStream(source.getFile());
+             FileOutputStream output = new FileOutputStream(target.getFile())) {
+            byte[] buffer = new byte[32768];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                if (task.isCancelled() || Thread.currentThread().isInterrupted()) {
+                    throw new InterruptedIOException("Download cancelled");
+                }
+                output.write(buffer, 0, count);
+            }
+            complete = true;
+        } finally {
+            if (!complete) target.close();
+        }
+        source.close();
+        return target;
     }
 
     private static Thread daemon(Runnable runnable, String name) {

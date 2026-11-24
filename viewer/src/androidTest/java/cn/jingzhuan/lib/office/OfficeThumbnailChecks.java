@@ -59,6 +59,21 @@ final class OfficeThumbnailChecks {
             }
             xlsxThumb.recycle();
 
+            File csvFile = File.createTempFile("thumbnail-check-", ".csv", context.getCacheDir());
+            try {
+                try (FileOutputStream out = new FileOutputStream(csvFile)) {
+                    out.write("City,Sales\nBeijing,100\n".getBytes(StandardCharsets.UTF_8));
+                }
+                Bitmap csvThumb = OfficeThumbnail.decode(context, Uri.fromFile(csvFile), 240, 180);
+                if (csvThumb == null || csvThumb.getWidth() <= 0 || csvThumb.getHeight() <= 0
+                    || csvThumb.getWidth() > 240 || csvThumb.getHeight() > 180) {
+                    throw new AssertionError("Invalid CSV thumbnail");
+                }
+                csvThumb.recycle();
+            } finally {
+                csvFile.delete();
+            }
+
             // 2. 异步加载测试
             CountDownLatch latch = new CountDownLatch(1);
             AtomicReference<Bitmap> asyncBitmap = new AtomicReference<>();
