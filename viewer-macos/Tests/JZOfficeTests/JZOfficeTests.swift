@@ -567,6 +567,33 @@ struct JZOfficeTests {
         return false
     }
 
+    /// 采样整张图片的全部像素，供「某类颜色必须出现」这类存在性断言使用。
+    private func pixelSampler(for image: CGImage) -> [(r: UInt8, g: UInt8, b: UInt8, a: UInt8)]? {
+        let w = image.width
+        let h = image.height
+        guard w > 0, h > 0 else { return nil }
+        var bytes = [UInt8](repeating: 255, count: w * h * 4)
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: &bytes,
+            width: w,
+            height: h,
+            bitsPerComponent: 8,
+            bytesPerRow: w * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var pixels: [(r: UInt8, g: UInt8, b: UInt8, a: UInt8)] = []
+        pixels.reserveCapacity(w * h)
+        for i in stride(from: 0, to: bytes.count, by: 4) {
+            pixels.append((bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]))
+        }
+        return pixels
+    }
+
     // MARK: - OfficeImageLoader 视口虚拟化与按需缓存测试
 
     @Test("OfficeImageLoader 基础请求、异步解码与回调触发")
@@ -3263,5 +3290,530 @@ struct JZOfficeTests {
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         )!
         return ctx.makeImage()!
+    }
+
+    // MARK: - XLSX 工作表浮动图片与形状
+
+    /// 1×1 纯蓝 PNG（69 字节，sRGB、无透明通道）。
+    ///
+    /// 手写字节而不是引用样例文件：测试必须能在任意机器上确定性地产出同一张图，
+    /// 并且「整块蓝色」是像素断言最容易区分于白底与灰色占位块的信号。
+    private static let onePixelBluePNG: [UInt8] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+        0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+        0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41,
+        0x54, 0x78, 0xda, 0x63, 0x60, 0x60, 0xf8, 0x0f,
+        0x00, 0x01, 0x03, 0x01, 0x00, 0x36, 0x74, 0x11,
+        0x40, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+        0x44, 0xae, 0x42, 0x60, 0x82,
+    ]
+
+    /// 用 store-only（不压缩）方式把若干部件打成 ZIP，供测试构造最小 OOXML 包。
+    ///
+    /// 只用 stored 是因为无损压缩器需要 deflate 实现；core 的 ZIP 读取对两种方式一视同仁，
+    /// 而 store-only 的中央目录与本地头只需几十行字节计算，测试因此无需引入第三方依赖。
+    private func makeStoredZip(entries: [(name: String, data: Data)]) -> Data {
+        var local = Data()
+        var central = Data()
+        var centralSize = 0
+        // 固定的 DOS 时间戳（2020-01-01 00:00:00）让同一份固件产出字节级一致的文件
+        let dosTime: UInt16 = 0
+        let dosDate: UInt16 = 0x5021
+        for entry in entries {
+            let nameBytes = Array(entry.name.utf8)
+            let crc = Self.crc32(entry.data)
+            let size = UInt32(entry.data.count)
+            let offset = UInt32(local.count)
+
+            // 本地文件头：签名 + 版本 + 标志 + 压缩法(0=stored) + 时间/日期 + CRC + 尺寸 + 文件名长度
+            var header = Data()
+            header.append(contentsOf: [0x50, 0x4b, 0x03, 0x04])
+            header.append(contentsOf: [20, 0])                    // version needed
+            header.append(contentsOf: [0, 0])                     // flags
+            header.append(contentsOf: [0, 0])                     // method = stored
+            header.append(littleEndian: dosTime)
+            header.append(littleEndian: dosDate)
+            header.append(littleEndian: crc)
+            header.append(littleEndian: size)
+            header.append(littleEndian: size)
+            header.append(littleEndian: UInt16(nameBytes.count))
+            header.append(contentsOf: [0, 0])                     // extra field length
+            header.append(contentsOf: nameBytes)
+            local.append(header)
+            local.append(entry.data)
+
+            // 中央目录项：与本地头字段对齐，额外记录本地头偏移
+            var record = Data()
+            record.append(contentsOf: [0x50, 0x4b, 0x01, 0x02])
+            record.append(contentsOf: [20, 0])                    // version made by
+            record.append(contentsOf: [20, 0])                    // version needed
+            record.append(contentsOf: [0, 0])                     // flags
+            record.append(contentsOf: [0, 0])                     // method = stored
+            record.append(littleEndian: dosTime)
+            record.append(littleEndian: dosDate)
+            record.append(littleEndian: crc)
+            record.append(littleEndian: size)
+            record.append(littleEndian: size)
+            record.append(littleEndian: UInt16(nameBytes.count))
+            record.append(contentsOf: [0, 0])                     // extra field length
+            record.append(contentsOf: [0, 0])                     // comment length
+            record.append(contentsOf: [0, 0])                     // disk number
+            record.append(contentsOf: [0, 0])                     // internal attrs
+            record.append(contentsOf: [0, 0, 0, 0])               // external attrs
+            record.append(littleEndian: offset)
+            record.append(contentsOf: nameBytes)
+            central.append(record)
+            centralSize += record.count
+        }
+        var output = local
+        output.append(central)
+        let centralOffset = UInt32(local.count)
+        var end = Data()
+        end.append(contentsOf: [0x50, 0x4b, 0x05, 0x06])
+        end.append(contentsOf: [0, 0])                            // disk number
+        end.append(contentsOf: [0, 0])                            // central dir start disk
+        end.append(littleEndian: UInt16(entries.count))
+        end.append(littleEndian: UInt16(entries.count))
+        end.append(littleEndian: UInt32(centralSize))
+        end.append(littleEndian: centralOffset)
+        end.append(contentsOf: [0, 0])                            // comment length
+        output.append(end)
+        return output
+    }
+
+    private static func crc32(_ data: Data) -> UInt32 {
+        var table = [UInt32](repeating: 0, count: 256)
+        for i in 0..<256 {
+            var value = UInt32(i)
+            for _ in 0..<8 {
+                value = (value & 1) != 0 ? (value >> 1) ^ 0xEDB8_8320 : value >> 1
+            }
+            table[i] = value
+        }
+        var crc: UInt32 = 0xFFFF_FFFF
+        for byte in data {
+            crc = table[Int((crc ^ UInt32(byte)) & 0xff)] ^ (crc >> 8)
+        }
+        return crc ^ 0xFFFF_FFFF
+    }
+
+    /// 构造最小但真实的 XLSX 包：`<xdr:pic>` 引用 `xl/media/image1.png`，另一个 `<xdr:sp>` 纯红填充。
+    ///
+    /// 两个锚点都落在 A1 附近（列 0/行 0 起），因此首屏视口必然可见；
+    /// 图片部件真的存在于包内，所以 `ImageStore.loadSync` 会走真实的读包 + ImageIO 解码路径。
+    private func makeXlsxWithPictureAndShape() -> Data {
+        func rels(_ items: [(String, String, String)]) -> String {
+            let body = items
+                .map { #"<Relationship Id="\#($0.0)" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/\#($0.1)" Target="\#($0.2)"/>"# }
+                .joined()
+            return #"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\#(body)</Relationships>"#
+        }
+        let contentTypes = """
+        <?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\
+        <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\
+        <Default Extension="xml" ContentType="application/xml"/>\
+        <Default Extension="png" ContentType="image/png"/>\
+        <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>\
+        <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>\
+        <Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>\
+        </Types>
+        """
+        let workbookParts: [(String, String)] = [
+            ("[Content_Types].xml", contentTypes),
+            ("_rels/.rels", rels([("rOffice", "officeDocument", "xl/workbook.xml")])),
+            ("xl/workbook.xml", """
+            <?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" \
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">\
+            <sheets><sheet name="Pics" sheetId="1" r:id="rSheet"/></sheets></workbook>
+            """),
+            ("xl/_rels/workbook.xml.rels", rels([("rSheet", "worksheet", "worksheets/sheet1.xml")])),
+            ("xl/worksheets/sheet1.xml", """
+            <?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" \
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">\
+            <sheetFormatPr defaultRowHeight="20" defaultColWidth="10"/>\
+            <sheetData><row r="1" ht="20"><c r="A1" t="inlineStr"><is><t>Pic</t></is></c></row></sheetData>\
+            <drawing r:id="rDrawing"/></worksheet>
+            """),
+            ("xl/worksheets/_rels/sheet1.xml.rels", rels([("rDrawing", "drawing", "../drawings/drawing1.xml")])),
+            ("xl/drawings/_rels/drawing1.xml.rels", rels([("rImage", "image", "../media/image1.png")])),
+            ("xl/drawings/drawing1.xml", """
+            <?xml version="1.0" encoding="UTF-8"?>\
+            <xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" \
+            xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" \
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">\
+            <xdr:twoCellAnchor editAs="oneCell">\
+            <xdr:from><xdr:col>0</xdr:col><xdr:colOff>127000</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>127000</xdr:rowOff></xdr:from>\
+            <xdr:to><xdr:col>2</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>6</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>\
+            <xdr:pic><xdr:nvPicPr><xdr:cNvPr id="2" name="Picture 1"/><xdr:cNvPicPr/></xdr:nvPicPr>\
+            <xdr:blipFill><a:blip r:embed="rImage"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>\
+            <xdr:spPr><a:xfrm/><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>\
+            <xdr:clientData/></xdr:twoCellAnchor>\
+            <xdr:twoCellAnchor editAs="oneCell">\
+            <xdr:from><xdr:col>2</xdr:col><xdr:colOff>254000</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>127000</xdr:rowOff></xdr:from>\
+            <xdr:to><xdr:col>4</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>6</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>\
+            <xdr:sp><xdr:nvSpPr><xdr:cNvPr id="3" name="Shape 1"/><xdr:cNvSpPr/></xdr:nvSpPr>\
+            <xdr:spPr><a:xfrm/><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>\
+            <a:solidFill><a:srgbClr val="FF0000"/></a:solidFill>\
+            <a:ln><a:noFill/></a:ln></xdr:spPr></xdr:sp>\
+            <xdr:clientData/></xdr:twoCellAnchor>\
+            </xdr:wsDr>
+            """),
+        ]
+        var entries: [(String, Data)] = workbookParts.map { ($0.0, Data($0.1.utf8)) }
+        entries.append(("xl/media/image1.png", Data(Self.onePixelBluePNG)))
+        return makeStoredZip(entries: entries)
+    }
+
+    /// 把固件写入临时目录并返回文件 URL；调用方负责清理目录。
+    private func writeTemporaryFile(named name: String, data: Data) throws -> (dir: URL, url: URL) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("jz-office-xlsx-images-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(name)
+        try data.write(to: url)
+        return (dir, url)
+    }
+
+    /// 在指定视口参数下离屏绘制工作表，返回自上而下的 RGBA 像素缓冲与采样器。
+    ///
+    /// 先 `translate + flip` 把上下文调整为 `NSView.isFlipped` 的左上原点坐标系，
+    /// 与 `OfficeDocumentNSView.draw` 的实际调用完全一致，因此采样点即屏幕上看到的点。
+    private func renderSheet(
+        _ sheet: OfficeSheet,
+        viewport: CGRect,
+        images: [String: CGImage]
+    ) -> (sampler: (Int, Int) -> (r: UInt8, g: UInt8, b: UInt8, a: UInt8), image: CGImage) {
+        let width = Int(viewport.width)
+        let height = Int(viewport.height)
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        var bytes = [UInt8](repeating: 255, count: width * height * 4)
+        let ctx = CGContext(
+            data: &bytes,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        ctx.translateBy(x: 0, y: CGFloat(height))
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.translateBy(x: -viewport.minX, y: -viewport.minY)
+        CGElementDrawer.drawSpreadsheet(
+            in: ctx,
+            sheet: sheet,
+            styles: [],
+            viewport: viewport,
+            images: images
+        )
+        let image = ctx.makeImage()!
+        let sampler: (Int, Int) -> (r: UInt8, g: UInt8, b: UInt8, a: UInt8) = { x, y in
+            let idx = (y * width + x) * 4
+            return (bytes[idx], bytes[idx + 1], bytes[idx + 2], bytes[idx + 3])
+        }
+        return (sampler, image)
+    }
+
+    @Test("XLSX 工作表内嵌图片与形状落画：视口可见部件收集、图片解码绘制与形状色块")
+    func testXlsxDrawsEmbeddedImagesAndShapes() throws {
+        let fixture = makeXlsxWithPictureAndShape()
+        let (dir, url) = try writeTemporaryFile(named: "pics.xlsx", data: fixture)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // 1. 包内图片部件可被 NativeCore 读出并由 ImageStore 真实解码
+        let imageData = try NativeCore.readPart(at: url.path, part: "xl/media/image1.png")
+        #expect(imageData.count == Self.onePixelBluePNG.count, "读取到的图片字节应与写入的 PNG 一致")
+        let store = ImageStore(filePath: url.path)
+        defer { store.release() }
+        let decoded = store.loadSync(part: "xl/media/image1.png", maxPixelBudget: 4_000_000)
+        #expect(decoded != nil, "ImageStore 必须能解码包内 PNG")
+        #expect(decoded?.width == 1 && decoded?.height == 1)
+
+        // 2. 端到端：核心解析结果必须真的带出 <xdr:pic> 的 IMAGE 与 <xdr:sp> 的形状元素，
+        //    并且视口收集器能命中这些真实解析出的图片部件。
+        let parsed = try NativeCore.parseDocument(at: url.path)
+        let parsedSheet = try #require(parsed.sheets.first, "解析结果必须含至少一个工作表")
+        let parsedImages = parsedSheet.elements.filter { $0.type == .image }
+        let parsedShapes = parsedSheet.elements.filter { $0.type == .rect || $0.type == .path }
+        #expect(
+            parsedImages.contains { $0.image == "xl/media/image1.png" },
+            "核心应输出指向 xl/media/image1.png 的 IMAGE 元素，实际 \(parsedImages.map { $0.image ?? "nil" })"
+        )
+        #expect(!parsedShapes.isEmpty, "核心应输出 <xdr:sp> 对应的 RECT/PATH 形状元素")
+        let parsedViewport = CGRect(x: 0, y: 0, width: 400, height: 300)
+        let parsedParts = CGElementDrawer.visibleSheetImageParts(sheet: parsedSheet, viewport: parsedViewport)
+        #expect(
+            parsedParts.contains("xl/media/image1.png"),
+            "视口收集器必须命中真实解析出的图片部件，实际 \(parsedParts)"
+        )
+
+        // 2b. 真实解析出的工作表直接离屏绘制：图片像素与形状色块都必须落画。
+        //     这一步完全走「core 解析 → 视口收集 → ImageStore 解码 → drawSpreadsheet」的端到端链路。
+        let parsedRender = renderSheet(parsedSheet, viewport: parsedViewport, images: store.snapshot)
+        // 解析出的图片元素外框 (10,30)-(105,120) 加 42/22 标头 gutter → 屏幕 (52,52)-(147,142)
+        let parsedImagePixel = parsedRender.sampler(100, 95)
+        #expect(
+            parsedImagePixel.b > 200 && parsedImagePixel.r < 60 && parsedImagePixel.g < 60,
+            "真实解析出的工作表内嵌图片应绘制为蓝色 PNG，实际 \(parsedImagePixel)"
+        )
+        // 解析出的形状外框 (125,30)-(210,120) → 屏幕 (167,52)-(252,142)
+        let parsedShapePixel = parsedRender.sampler(210, 95)
+        #expect(
+            parsedShapePixel.r > 200 && parsedShapePixel.g < 60 && parsedShapePixel.b < 60,
+            "真实解析出的工作表形状应绘制为红色，实际 \(parsedShapePixel)"
+        )
+
+        // 3. 绘制链路：用真实图片部件 + 真实解码结果跑完整绘制，像素上同时验证图片与形状。
+        //    模型元素直接构造（等价于 core 对 <xdr:pic>/<xdr:sp> 的输出），
+        //    因此本段不依赖 core 的图片编译是否已落地，仍然真实验证「解码 → 视口收集 → 绘制」。
+        let picture = OfficeElement(
+            type: .image,
+            x: 10,
+            y: 10,
+            width: 60,
+            height: 40,
+            transform: [1, 0, 0, 1, 10, 10],
+            padding: 0,
+            fill: 0,
+            stroke: 0,
+            image: "xl/media/image1.png"
+        )
+        let shape = OfficeElement(
+            type: .rect,
+            x: 90,
+            y: 10,
+            width: 60,
+            height: 40,
+            transform: [1, 0, 0, 1, 90, 10],
+            padding: 0,
+            fill: 0xffff0000,
+            stroke: 0
+        )
+        // 完全落在视口外的图片：不得进入可见集合，也不得画进画布
+        let offscreen = OfficeElement(
+            type: .image,
+            x: 900,
+            y: 700,
+            width: 40,
+            height: 40,
+            transform: [1, 0, 0, 1, 900, 700],
+            padding: 0,
+            fill: 0,
+            stroke: 0,
+            image: "xl/media/image2.png"
+        )
+        let sheet = OfficeSheet(
+            name: "Pics",
+            rowHeights: Array(repeating: 20, count: 12),
+            columnWidths: Array(repeating: 64, count: 12),
+            cells: [],
+            merges: [],
+            elements: [picture, shape, offscreen]
+        )
+        let viewport = CGRect(x: 0, y: 0, width: 400, height: 300)
+
+        // 可见部件收集：命中图内图片、跳过视口外图片、保序去重
+        let parts = CGElementDrawer.visibleSheetImageParts(sheet: sheet, viewport: viewport)
+        #expect(parts == ["xl/media/image1.png"], "可见部件应只有视口内的 image1，实际 \(parts)")
+
+        // 无图片字典时图片退化成灰色占位块，形状仍然绘制：作为「图片确实来自缓存」的对照基线
+        let placeholder = renderSheet(sheet, viewport: viewport, images: [:])
+        let placeholderPixel = placeholder.sampler(82, 52)
+        #expect(
+            abs(Int(placeholderPixel.r) - 0xe8) <= 8
+                && abs(Int(placeholderPixel.g) - 0xea) <= 8
+                && abs(Int(placeholderPixel.b) - 0xed) <= 8,
+            "缺少图片缓存时应绘制灰色占位块，实际 \(placeholderPixel)"
+        )
+
+        // 传入真实解码结果：图片区域必须变成 PNG 的蓝色，形状区域必须是红色
+        let rendered = renderSheet(sheet, viewport: viewport, images: store.snapshot)
+        // 图片：数据区原点为 (42,22)，元素 (10,10)-(70,50) → 屏幕 (52,32)-(112,72)，取中心 (82,52)
+        let imagePixel = rendered.sampler(82, 52)
+        #expect(
+            imagePixel.b > 200 && imagePixel.r < 60 && imagePixel.g < 60,
+            "内嵌图片应绘制为 PNG 的纯蓝像素，实际 \(imagePixel)"
+        )
+        // 形状：(90,10)-(150,50) → 屏幕 (132,32)-(192,72)，取中心 (162,52)
+        let shapePixel = rendered.sampler(162, 52)
+        #expect(
+            shapePixel.r > 200 && shapePixel.g < 60 && shapePixel.b < 60,
+            "红色填充的 <xdr:sp> 形状应绘制为红色，实际 \(shapePixel)"
+        )
+        // 视口外图片不得绘制：其元素外框换算到屏幕后完全在画布外，画布右侧保持白底
+        let outsidePixel = rendered.sampler(390, 290)
+        #expect(
+            outsidePixel.r > 240 && outsidePixel.g > 240 && outsidePixel.b > 240,
+            "视口外图片不得落画，实际 \(outsidePixel)"
+        )
+
+        // 4. 缩略图链路：走真实 XLSX 文件 + parseFirstViewport + 同步图片解码
+        let thumb = try OfficeThumbnail.renderCGImage(from: url, maxSize: CGSize(width: 480, height: 480))
+        #expect(thumb.width > 0 && thumb.height > 0)
+        #expect(hasNonWhitePixel(thumb), "含图片/形状的工作表缩略图不应为空白")
+        // 缩略图覆盖首屏可见区，因此必须真的出现蓝色图片像素与红色形状像素
+        let thumbSampler = try #require(pixelSampler(for: thumb))
+        #expect(
+            thumbSampler.contains { $0.b > 180 && $0.r < 90 && $0.g < 90 },
+            "缩略图应包含内嵌 PNG 的蓝色像素"
+        )
+        #expect(
+            thumbSampler.contains { $0.r > 180 && $0.g < 90 && $0.b < 90 },
+            "缩略图应包含红色填充形状的像素"
+        )
+    }
+
+    @Test("XLSX 预览视图按视口收集图片部件：可见区与预取区分别命中且切表后刷新")
+    @MainActor
+    func testXlsxCollectWantedImageParts() throws {
+        // 两张表各含不同图片部件：切表必须换掉所需图片集合（否则会一直显示上一表的图片/占位块）
+        let doc = try JSONDecoder().decode(OfficeDocument.self, from: """
+        {
+            "schemaVersion": 9,
+            "kind": "XLSX",
+            "sheets": [
+                {
+                    "name": "S1",
+                    "rowHeights": [20, 20, 20, 20, 20, 20, 20, 20, 20, 20],
+                    "columnWidths": [64, 64, 64, 64, 64, 64, 64, 64, 64, 64],
+                    "cells": [],
+                    "merges": [],
+                    "elements": [
+                        {"type": "IMAGE", "x": 10, "y": 10, "width": 40, "height": 40,
+                         "transform": [1, 0, 0, 1, 10, 10], "image": "xl/media/near.png"},
+                        {"type": "IMAGE", "x": 10, "y": 900, "width": 40, "height": 40,
+                         "transform": [1, 0, 0, 1, 10, 900], "image": "xl/media/far.png"}
+                    ]
+                },
+                {
+                    "name": "S2",
+                    "rowHeights": [20, 20, 20, 20, 20, 20, 20, 20, 20, 20],
+                    "columnWidths": [64, 64, 64, 64, 64, 64, 64, 64, 64, 64],
+                    "cells": [],
+                    "merges": [],
+                    "elements": [
+                        {"type": "IMAGE", "x": 10, "y": 10, "width": 40, "height": 40,
+                         "transform": [1, 0, 0, 1, 10, 10], "image": "xl/media/second.png"}
+                    ]
+                }
+            ],
+            "cellStyles": []
+        }
+        """.data(using: .utf8)!)
+
+        let view = OfficeDocumentNSView()
+        view.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
+        view.setDocument(doc)
+        view.currentPage = 1
+        view.zoom = 1
+
+        // 视口 400x300，预取区在垂直方向上下各扩 75%（即 y 约 -300...600）
+        let docVisible = CGRect(x: 0, y: 0, width: 400, height: 300)
+        let prefetch = docVisible.insetBy(dx: 0, dy: -docVisible.height * 0.75)
+        let first = view.collectWantedParts(in: docVisible, prefetch: prefetch)
+        #expect(first.visible.contains("xl/media/near.png"), "视口内图片必须进入可见集合，实际 \(first.visible)")
+        #expect(
+            !first.visible.contains("xl/media/far.png"),
+            "视口外图片不得进入可见集合，实际 \(first.visible)"
+        )
+        // far.png 在 y=900，落在预取区（到 y≈600）之外，因此两个集合都不应包含它
+        #expect(
+            !first.prefetch.contains("xl/media/far.png"),
+            "预取区外图片不得进入预取集合，实际 \(first.prefetch)"
+        )
+
+        // 切表：集合必须换成第二张表的图片，且不再要求第一张表的部件
+        view.currentPage = 2
+        let second = view.collectWantedParts(in: docVisible, prefetch: prefetch)
+        #expect(
+            second.visible.contains("xl/media/second.png"),
+            "切表后应要求新工作表的图片，实际 \(second.visible)"
+        )
+        #expect(
+            !second.visible.contains("xl/media/near.png"),
+            "切表后不得继续要求上一张表的图片，实际 \(second.visible)"
+        )
+    }
+
+    @Test("XLSX exportPDF 输出含工作表图片的有效 PDF")
+    func testXlsxExportPDFIncludesSheetImages() throws {
+        let fixture = makeXlsxWithPictureAndShape()
+        let (dir, url) = try writeTemporaryFile(named: "pics.pdf.xlsx", data: fixture)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // 端到端基线：核心必须把 <xdr:pic> 编译成带图片部件的工作表元素，
+        // 否则下面的导出断言即使「PASS」也说明不了图片进入了 PDF。
+        let parsed = try NativeCore.parseDocument(at: url.path)
+        let sheet = try #require(parsed.sheets.first)
+        let sheetImageParts = sheet.elements.filter { $0.type == .image }.compactMap(\.image)
+        #expect(
+            sheetImageParts.contains("xl/media/image1.png"),
+            "核心应为工作表输出 xl/media/image1.png，实际 \(sheetImageParts)"
+        )
+
+        let pdfURL = dir.appendingPathComponent("out.pdf")
+        try OfficeExporter.exportPDF(from: url, to: pdfURL)
+
+        let data = try Data(contentsOf: pdfURL)
+        #expect(data.count > 0, "导出 PDF 不应为空")
+        #expect(data.prefix(5) == Data("%PDF-".utf8), "导出文件必须是 PDF 头")
+
+        // 能被子系统 PDF 解析器打开，且至少一页
+        let document = try #require(
+            CGPDFDocument(pdfURL as CFURL),
+            "CGPDFDocument 必须能打开导出的 PDF"
+        )
+        #expect(document.numberOfPages >= 1, "导出的 PDF 至少应有一页")
+
+        // 导出必须真的把工作表画进页面：渲染首页并确认非空白
+        let page = try #require(document.page(at: 1))
+        let box = page.getBoxRect(.mediaBox)
+        #expect(box.width > 0 && box.height > 0)
+        let scale: CGFloat = 1
+        let width = max(1, Int(box.width * scale))
+        let height = max(1, Int(box.height * scale))
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        var bytes = [UInt8](repeating: 255, count: width * height * 4)
+        let ctx = try #require(CGContext(
+            data: &bytes,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        ctx.drawPDFPage(page)
+        let drawn = try #require(ctx.makeImage())
+        #expect(hasNonWhitePixel(drawn), "导出的 PDF 首页不应是纯白空页")
+        // 仅「非空白」不足以证明图片进了 PDF（红色形状也会让页面非空白），
+        // 因此额外要求首页出现内嵌 PNG 的蓝色像素：这正是工作表图片预加载与透传的证据。
+        let pdfPixels = try #require(pixelSampler(for: drawn))
+        #expect(
+            pdfPixels.contains { $0.b > 180 && $0.r < 90 && $0.g < 90 },
+            "导出的 PDF 首页应包含工作表内嵌 PNG 的蓝色像素"
+        )
+        #expect(
+            pdfPixels.contains { $0.r > 180 && $0.g < 90 && $0.b < 90 },
+            "导出的 PDF 首页应包含红色填充形状的像素"
+        )
+    }
+}
+
+/// ZIP 固件构造用的小端追加助手：ZIP 头部字段全部是小端定长整数。
+private extension Data {
+    mutating func append(littleEndian value: UInt16) {
+        append(contentsOf: [UInt8(value & 0xff), UInt8((value >> 8) & 0xff)])
+    }
+
+    mutating func append(littleEndian value: UInt32) {
+        append(contentsOf: [
+            UInt8(value & 0xff),
+            UInt8((value >> 8) & 0xff),
+            UInt8((value >> 16) & 0xff),
+            UInt8((value >> 24) & 0xff),
+        ])
     }
 }

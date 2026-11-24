@@ -149,6 +149,10 @@ public final class OfficePreviewController: ObservableObject {
             currentPage = sheetNumber
             notifyPageListeners()
         }
+        // 先同步画布页码再刷新图片集合：SwiftUI 的 updateNSView 要到下一周期才执行，
+        // 若直接 evaluateViewport，collectWantedParts 仍会读取旧表并请求旧图片。
+        canvasView?.currentPage = sheetNumber
+        canvasView?.evaluateViewport()
     }
 
     // MARK: - 选区公开 API（与 Android `OfficePreviewView` / 鸿蒙 `OfficePreviewController` 对齐）
@@ -843,7 +847,15 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             }
 
         case .xlsx:
-            break
+            // 表格浮动图片与形状：可见区与预取区各自跑一遍四象限几何求交，
+            // 与绘制层共用 `visibleSheetImageParts`，因此加载集合与真正画出来的元素严格一致。
+            let idx = max(0, min(doc.sheets.count - 1, currentPage - 1))
+            guard idx >= 0, idx < doc.sheets.count else { break }
+            let sheet = doc.sheets[idx]
+            visibleImages = CGElementDrawer.visibleSheetImageParts(sheet: sheet, viewport: docVisible)
+            let visibleSet = Set(visibleImages)
+            prefetchImages = CGElementDrawer.visibleSheetImageParts(sheet: sheet, viewport: prefetch)
+                .filter { !visibleSet.contains($0) }
         }
 
         return (visibleImages, prefetchImages)
@@ -1082,7 +1094,8 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
                 styles: doc.cellStyles,
                 viewport: docVisible,
                 selection: sheetSelection,
-                zoom: safeZoom
+                zoom: safeZoom,
+                images: activeImages
             )
             xlsxFreezePlan = CGElementDrawer.sheetFreezePlan(sheet: sheet, viewport: docVisible)
         }

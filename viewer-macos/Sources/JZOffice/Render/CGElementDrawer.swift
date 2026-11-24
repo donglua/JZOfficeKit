@@ -1963,7 +1963,8 @@ public enum CGElementDrawer {
         styles: [OfficeCellStyle],
         viewport: CGRect,
         selection: SheetSelectionModel.SheetSelection? = nil,
-        zoom: CGFloat = 1.0
+        zoom: CGFloat = 1.0,
+        images: [String: CGImage] = [:]
     ) {
         let (colOffsets, rowOffsets, totalW, totalH) = computeSheetExtents(sheet)
         let rowCount = sheet.rowHeights.count
@@ -1997,7 +1998,8 @@ public enum CGElementDrawer {
                     rowOffsets: rowOffsets,
                     colOffsets: colOffsets,
                     mergedCellFlags: mergedCellFlags,
-                    rowStarts: rowStarts
+                    rowStarts: rowStarts,
+                    images: images
                 )
             }
         }
@@ -2124,7 +2126,8 @@ public enum CGElementDrawer {
         rowOffsets: [CGFloat],
         colOffsets: [CGFloat],
         mergedCellFlags: [Bool],
-        rowStarts: [Int]?
+        rowStarts: [Int]?,
+        images: [String: CGImage]
     ) {
         let clip = quadrant.clip
         let tx = quadrant.translateX
@@ -2202,20 +2205,56 @@ public enum CGElementDrawer {
             }
         }
 
-        // 1.4 浮动图表：与单元格共用数据区 point 坐标，在每个冻结象限分别平移并继承象限 clip。
-        // 当前共享图表引擎只输出矢量与文字元素，无需图片缓存；元素 transform 已包含自身 x/y/flip。
+        // 1.4 浮动图片与图形：与单元格共用数据区 point 坐标，在每个冻结象限分别平移并继承象限 clip。
+        // `images` 是本帧已解码的图片字典，缺失的部件由 drawElement 回退为灰色占位块。
         if !sheet.elements.isEmpty {
             let offsetX = sheetHeaderWidth + tx
             let offsetY = sheetHeaderHeight + ty
-            let dataClip = clip.offsetBy(dx: -offsetX, dy: -offsetY)
+            let dataClip = sheetElementDataClip(quadrant)
+            guard dataClip.width > 0, dataClip.height > 0 else { return }
             ctx.saveGState()
             ctx.translateBy(x: offsetX, y: offsetY)
             for element in sheet.elements {
                 guard sheetElementBounds(element).intersects(dataClip) else { continue }
-                drawElement(in: ctx, element: element, images: [:])
+                drawElement(in: ctx, element: element, images: images)
             }
             ctx.restoreGState()
         }
+    }
+
+    /// 象限数据区裁剪矩形：把绘制用的屏幕裁剪区反平移回元素的数据区坐标系。
+    ///
+    /// 绘制（`drawSheetQuadrantContent`）与可见图片收集（`visibleSheetImageParts`）共用本函数，
+    /// 保证「认为可见的元素」与「真正画出来的元素」永远用同一个判定，不会出现加载了却不画、
+    /// 或画到了却没预取的偏差。
+    private static func sheetElementDataClip(_ quadrant: SheetQuadrant) -> CGRect {
+        let offsetX = sheetHeaderWidth + quadrant.translateX
+        let offsetY = sheetHeaderHeight + quadrant.translateY
+        return quadrant.clip.offsetBy(dx: -offsetX, dy: -offsetY)
+    }
+
+    /// 视口内可见的浮动图片部件路径（保序去重），供视口按需加载与缩略图/导出预取共用。
+    ///
+    /// 遍历 `sheetFreezePlan` 切出的全部象限（冻结行/列各自独立成象限），把元素的完整
+    /// 外接框（含 `transform` 的旋转/翻转）与该象限的数据区裁剪矩形求交；命中即视为可见。
+    /// 与绘制层的判定完全一致，因此旋转或被冻结边界切开的图片不会被误剔除。
+    public static func visibleSheetImageParts(sheet: OfficeSheet, viewport: CGRect) -> [String] {
+        guard !sheet.elements.isEmpty else { return [] }
+        let plan = sheetFreezePlan(sheet: sheet, viewport: viewport)
+        let rowCount = sheet.rowHeights.count
+        let columnCount = sheet.columnWidths.count
+        var parts: [String] = []
+        var seen: Set<String> = []
+        for quadrant in sheetQuadrants(plan: plan, rowCount: rowCount, columnCount: columnCount) {
+            let dataClip = sheetElementDataClip(quadrant)
+            guard dataClip.width > 0, dataClip.height > 0 else { continue }
+            for element in sheet.elements where element.type == .image {
+                guard let part = element.image, !part.isEmpty else { continue }
+                guard sheetElementBounds(element).intersects(dataClip) else { continue }
+                if seen.insert(part).inserted { parts.append(part) }
+            }
+        }
+        return parts
     }
 
     private static func sheetElementBounds(_ element: OfficeElement) -> CGRect {

@@ -52,7 +52,7 @@ public enum OfficeThumbnail {
             return try renderDocxThumbnail(filePath: path, doc: doc, maxSize: maxSize)
         case .xlsx:
             defer { NativeCore.evictCache(at: path) }
-            return try renderXlsxThumbnail(doc: doc, sheetIndex: pageNumber - 1, maxSize: maxSize)
+            return try renderXlsxThumbnail(filePath: path, doc: doc, sheetIndex: pageNumber - 1, maxSize: maxSize)
         }
     }
 
@@ -166,6 +166,7 @@ public enum OfficeThumbnail {
     }
 
     private static func renderXlsxThumbnail(
+        filePath: String,
         doc: OfficeDocument,
         sheetIndex: Int,
         maxSize: CGSize
@@ -181,13 +182,32 @@ public enum OfficeThumbnail {
         let scale = min(maxSize.width / previewW, maxSize.height / previewH)
         let outW = max(1, Int(round(previewW * scale)))
         let outH = max(1, Int(round(previewH * scale)))
+        let viewport = CGRect(x: 0, y: 0, width: previewW, height: previewH)
+
+        // 首屏可见的浮动图片同步解码：封面渲染是一次性离屏任务，异步加载回调来不及，
+        // 因此按「总预算均摊到每张」的方式一次性解码，保证封面与预览首屏观感一致。
+        // 工作表没有图片时不创建 ImageStore，纯图表/无图文档零额外开销。
+        let neededParts = CGElementDrawer.visibleSheetImageParts(sheet: sheet, viewport: viewport)
+        var cache: [String: CGImage] = [:]
+        let imageStore: ImageStore?
+        if neededParts.isEmpty {
+            imageStore = nil
+        } else {
+            let store = ImageStore(filePath: filePath)
+            imageStore = store
+            let budget = max(200_000, 4_000_000 / max(1, neededParts.count))
+            // 整批驻留，避免首屏图片较多时逐张 loadSync 触发 LRU，把先解码的图片重新淘汰成占位块。
+            cache = store.preload(parts: neededParts, perImageBudget: budget)
+        }
+        defer { imageStore?.release() }
 
         let ctx = try makeTopDownContext(width: outW, height: outH, scale: scale)
         CGElementDrawer.drawSpreadsheet(
             in: ctx,
             sheet: sheet,
             styles: doc.cellStyles,
-            viewport: CGRect(x: 0, y: 0, width: previewW, height: previewH)
+            viewport: viewport,
+            images: cache
         )
         guard let cgImage = ctx.makeImage() else {
             throw OfficeError.renderFailed("Failed to extract CGImage from XLSX context")

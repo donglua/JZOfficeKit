@@ -35,6 +35,13 @@ public enum OfficeExporter {
                 }
             }
         }
+        // XLSX 工作表图片整批驻留：避免多图导出时逐张加载触发 LRU，导致先加载的图片变回占位块。
+        let sheetImageParts = doc.sheets.flatMap { sheet in
+            sheet.elements.compactMap { el in
+                el.type == .image ? el.image : nil
+            }
+        }
+        imageStore.preload(parts: sheetImageParts, perImageBudget: 4_000_000)
 
         let cache = imageStore.snapshot
         guard let pdfCtx = CGContext(destinationURL as CFURL, mediaBox: nil, nil) else {
@@ -91,7 +98,8 @@ public enum OfficeExporter {
                     in: pdfCtx,
                     sheet: sheet,
                     styles: doc.cellStyles,
-                    viewport: mediaBox
+                    viewport: mediaBox,
+                    images: cache
                 )
                 pdfCtx.restoreGState()
                 pdfCtx.endPage()
@@ -108,6 +116,9 @@ public enum OfficeExporter {
     }
 
     /// 同步将指定页导出为 PNG 图片
+    ///
+    /// 复用 `OfficeThumbnail.renderPageCGImage` 的离屏渲染管线：XLSX 工作表浮动图片由该管线
+    /// 按视口收集可见部件后同步解码，因此 PNG 导出与预览首屏的图片、形状一致。
     public static func exportPNG(
         from sourceURL: URL,
         pageNumber: Int = 1,
