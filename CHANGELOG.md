@@ -1,5 +1,28 @@
 # 更新日志
 
+## 0.19.0
+
+发布页面：[v0.19.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.19.0)。
+
+本版本新增 XLSX 工作表浮动图片、DrawingML 形状/连接线与嵌套组合图形全端渲染与导出支持（`core` / Android / HarmonyOS NEXT / macOS），扩展 XLSX 货币、会计、单位字面量、千分位缩放、科学计数法、通用日期时间模板与 `t="d"` ISO 8601 日期单元格格式支持，新增 CSV / TSV 纯文本表格跨平台预览（复用 `Kind::XLSX` 表格模型并打通 Android 本地/在线缓存后缀识别），同时修复 macOS 预览对齐与 XLSX 命中偏移问题，`schemaVersion` 保持 **9** 不变。
+
+### 排版与特性
+
+- **XLSX 工作表浮动图片、形状、连接线与组合图形（`core` / Android / HarmonyOS NEXT / macOS）**：
+  - **核心解析（`core`）**：抽离共享 PPTX 绘图辅助逻辑并在 `core/src/xlsx/drawing.rs` 新增工作表 `<xdr:pic>`（含 `srcRect` 裁剪、旋转/翻转与描边）、`<xdr:sp>`（26 种预设几何、自定义路径、纯色/渐变填充与默认 11 pt 文本框）、`<xdr:cxnSp>`（虚线描边与箭头端点）及 `<xdr:grpSp>`（最多 16 层嵌套组合）解析；图表、图片、形状与形状文本统一受每表 5,000 个绘制元素、100,000 条自定义路径命令及工作簿媒体数量预算约束，并自动扩展工作表滚动范围。
+  - **三端渲染与导出**：Android（`viewer`：`SheetRenderer`、`OfficePreviewView`、`OfficeThumbnail`）、HarmonyOS NEXT（`viewer-ohos`：`SheetImageParts.ts`、`SpreadsheetView.ets`、`OfficePreviewView.ets`、`OfficeThumbnail.ets`）与 macOS（`viewer-macos`：`CGElementDrawer`、`OfficePreviewView`、`OfficeThumbnail`、`OfficeExporter`）同步接入工作表图片按需解码、LRU 缓存、视口预取与离屏缩略图/PDF/PNG 导出；同步更新 `sample.xlsx` 综合样例。
+- **XLSX 数字格式与 ISO 日期扩展（`core`）**：
+  - 支持货币与区域货币标签（`$#,##0.00`、`[$¥-804]#,##0.00`、`[$USD] 0.00`，内置 `numFmtId 5..=8`）、会计格式（`numFmtId 37..=44`，含下划线留白与 `*` 填充符）、单位字面量（`0" kg"`、`0"万元"`、`0\ 元`）、千分位缩放逗号（`0,`、`#,##0.0,," M"`）与科学计数法（`0.00E+00`、`##0.0E+0`，内置 `numFmtId 11`、`48`）。
+  - 支持通用自定义日期时间模板（`yyyy"年"m"月"d"日"`、`yyyy/m/d`、`dddd`/`ddd`、`mmmm`/`mmmmm`、`mm:ss.0`、`AM/PM`、`A/P`、`[h]:mm:ss`）与 `t="d"` ISO 8601 日期单元格，并修复连续混合大小写日期 token 合并及无补零单字母分钟 token（`m`）保留问题。
+- **CSV / TSV 纯文本表格支持（`core` / Android / HarmonyOS NEXT / macOS）**：
+  - 新增 `core/src/csv.rs`（接入 `encoding_rs`），以 `Kind::XLSX` 单工作表模型解析 `.csv` / `.tsv`（支持 UTF-8 BOM/无 BOM、UTF-16LE/BE BOM 与 GB18030/GBK 回退，Excel `sep=<char>` 指令与 `,` / `;` / `\t` 探测，RFC 4180 引号及跨行单元格，元数据速读、首屏解析与全文检索，并拒绝二进制文件或回退识别伪装后缀的 OOXML 包）；直接复用三端表格渲染、选区 TSV 复制与导出能力。
+  - Android 端 `OfficeCache`、`OfficePackage`、`RemoteOfficeLoader`、`HttpUrlConnectionOfficeDownloader` 与 `demo` 支持保留 `.csv` / `.tsv` 缓存后缀及 MIME 识别，打通本地 `Uri` 与在线下载打开链路。
+
+### 测试与修复
+
+- **macOS 预览对齐与命中偏移修复（`viewer-macos`）**：修复非表格/表格预览视图左上对齐偏移以及 XLSX 点击/选区坐标命中偏移问题。
+- **测试**：新增 `core/tests/xlsx_drawings.rs`（17 项）、`core/tests/xlsx_showcase.rs`（4 项）、`core/tests/xlsx_formats.rs`（2 项）与 `core/tests/csv_parsing.rs`（6 项）；扩展 Android `scripts/tests/DocumentDecoderChecks.java`（174 → **188** 项断言）、`scripts/tests/OfficeCacheChecks.java` 与设备端 `PackageOpeningChecks` / `OfficeMetadataChecks` / `OfficeThumbnailChecks`；扩展 HarmonyOS `scripts/tests/SheetFreezeChecks.ts`（162 → **218** 项检查）以及 macOS `JZOfficeTests.swift`（48 → **51** 项测试）。
+
 ## 0.18.0
 
 发布页面：[v0.18.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.18.0)。

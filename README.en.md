@@ -2,26 +2,26 @@
 
 **English** | [简体中文](README.md)
 
-A lightweight cross-platform offline Office document preview SDK for **Android**, **HarmonyOS NEXT**, and **macOS**, providing local read-only preview of DOCX, PPTX, and XLSX files.
+A lightweight cross-platform offline Office document preview SDK for **Android**, **HarmonyOS NEXT**, and **macOS**, providing local read-only preview of DOCX, PPTX, XLSX, and CSV / TSV files.
 
 Both platforms share the Rust parsing core `jz-office-core`; the platform layers use native components and Canvas for layout and drawing. There is no server-side conversion, no WebView, no external Office app and no bundled fonts. Android also offers an optional `viewer-online` module for online document download and cache management.
 
-The latest version is **0.18.0**. See the [CHANGELOG](CHANGELOG.md) (Chinese) for release notes and [AGENT.md](AGENT.md) (Chinese) for development, testing and release guidelines.
+The latest version is **0.19.0**. See the [CHANGELOG](CHANGELOG.md) (Chinese) for release notes and [AGENT.md](AGENT.md) (Chinese) for development, testing and release guidelines.
 
-- **GitHub Release**: [v0.18.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.18.0)
-- **Maven Central (Android)**: [io.github.donglua.office:viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.18.0) / [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.18.0)
-- **OHPM (HarmonyOS NEXT)**: `@jzdy/office` (`0.18.0`)
+- **GitHub Release**: [v0.19.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.19.0)
+- **Maven Central (Android)**: [io.github.donglua.office:viewer](https://central.sonatype.com/artifact/io.github.donglua.office/viewer/0.19.0) / [viewer-online](https://central.sonatype.com/artifact/io.github.donglua.office/viewer-online/0.19.0)
+- **OHPM (HarmonyOS NEXT)**: `@jzdy/office` (`0.19.0`)
 
 ## Artifact Size
 
-Actual sizes of the `0.18.0` release artifacts (1 KiB = 1024 bytes):
+Actual sizes of the `0.19.0` release artifacts (1 KiB = 1024 bytes):
 
 | Platform | Artifact | Size | Description |
 | --- | --- | --- | --- |
-| Android | `viewer-0.18.0.aar` | **~1150 KiB** | Core DOCX / PPTX / XLSX preview, includes `arm64-v8a` and `armeabi-v7a` |
-| Android | `viewer-online-0.18.0.aar` | **~21.1 KiB** | Optional online download and cache module used with `viewer`, no extra networking dependency |
-| HarmonyOS | `jzdy-office-0.18.0.har` | **~1417 KiB** | Core preview HAR for HarmonyOS NEXT (`@jzdy/office`), includes `arm64-v8a` and `x86_64` |
-| macOS | `CJZOffice-0.18.0.xcframework.zip` | **~1.9 MiB** | macOS native core XCFramework, includes universal `arm64` (Apple Silicon) and `x86_64` (Intel) static library |
+| Android | `viewer-0.19.0.aar` | **~1443 KiB** | Core DOCX / PPTX / XLSX / CSV / TSV preview, includes `arm64-v8a` and `armeabi-v7a` |
+| Android | `viewer-online-0.19.0.aar` | **~22.2 KiB** | Optional online download and cache module used with `viewer`, no extra networking dependency |
+| HarmonyOS | `jzdy-office-0.19.0.har` | **~1725 KiB** | Core preview HAR for HarmonyOS NEXT (`@jzdy/office`), includes `arm64-v8a` and `x86_64` |
+| macOS | `CJZOffice-0.19.0.xcframework.zip` | **~2.3 MiB** | macOS native core XCFramework, includes universal `arm64` (Apple Silicon) and `x86_64` (Intel) static library |
 
 No artifact bundles fonts or demo samples. The actual size increase in your app depends on ABI filters, R8/obfuscation and packaging settings.
 
@@ -51,6 +51,7 @@ This library targets **lightweight, offline, read-only basic preview**. It does 
 | **DOCX** | Paragraphs and style inheritance, explicit font names, font size / color / bold / italic / underline, multiple / fixed / minimum line spacing, first-line / hanging / left / right indents, 16 common auto-numbering formats, embedded images, floating images and DrawingML shapes / text boxes (`<wp:anchor>`, `<wps:wsp>`/`<wpg:wgp>`, `<wps:txbx>`), text wrapping (square / top-and-bottom / behind or in front of text), embedded and floating charts via the shared DrawingML chart engine, rectangular tables, footnotes and endnotes (static continuous-flow preview with automatic decimal numbering), headers and footers (scroll with content), hidden text (`vanish` / `webHidden`) and phonetic guide filtering | Continuous scrolling flow layout (`pageCount` is fixed to 1); exact pagination, tight contour clipping (approximated via bounding box), and equations are ignored; footnotes and endnotes are not positioned at page bottoms and do not provide reference navigation |
 | **PPTX** | Slides rendered in presentation order, text box alignment and wrap control, line spacing and indents, saved autofit (`normAutofit`), embedded images and `blipFill` backgrounds, rectangle / ellipse / rounded rectangle / triangle / diamond plus **26 preset geometries** (directional arrows, chevrons, polygons, stars, flowchart boxes and callouts), connector **arrowheads** (`headEnd` / `tailEnd`), **dashed strokes** (`prstDash`), and custom numeric paths, linear gradient fills and backgrounds, nested group transforms (translate / scale / rotate), tables (including horizontal and vertical merged cells) and cell fills, shared DrawingML charts (line / area / column / bar including stacked, percent-stacked and 3D flattened to 2D, pie / doughnut, scatter, radar, combo charts with secondary axes, basic data labels, `dPt` point styles and adaptive legends) from cached data, cached SmartArt drawings (`diagramDrawing`), cached preview images for embedded OLE objects, theme colors and luminance (`lumMod` / `lumOff`) | Animations, preset geometry guide formulas, WordArt, and SmartArt / OLE objects without cached previews are ignored; 3D charts are flattened to 2D and SmartArt layout is not recalculated; gradient text is approximated with a representative color; font fitting is not re-solved |
 | **XLSX** | Multi-sheet switching, row / column headers, frozen panes (row / column header locking with viewport ratio protection and a freeze divider), **cell and range selection copy (TSV)**, smooth two-way scrolling and zooming, merged cells, row heights and column widths, font / fill / border / alignment / indent / wrap text / shrink-to-fit (when wrapping is disabled), custom indexed palette and `tint` colors, multi-section number formats (positive / negative / zero / text, percent, date, locale tag stripping), currency and regional currency tags (`$#,##0.00`, `[$¥-804]#,##0.00`, `[$USD] 0.00`, built-in `numFmtId 5..=8`), accounting formats (`numFmtId 37..=44`, including underscore padding and `*` fill characters such as `_(* #,##0_)`), unit literals as quoted or backslash-escaped text (`0" kg"`, `0\ ea`, and non-ASCII unit suffixes), thousands scaling commas (`0,`, `#,##0.0,," M"`), scientific notation (`0.00E+00`, `##0.0E+0`, built-in `numFmtId 11`, `48`), generic custom date and time templates (quoted literal separators such as `yyyy"year"m"month"d"day"`, `yyyy/m/d`, `dddd` / `ddd`, `mmmm` / `mmmmm`, `mm:ss.0`, `AM/PM`, `A/P`, `[h]:mm:ss`, with `m` / `mm` month-versus-minute disambiguation), `t="d"` ISO 8601 date cells (converted to a serial number and rendered with the cell format, defaulting to `yyyy-mm-dd` or `yyyy-mm-dd hh:mm:ss` and right-aligned as numeric cells), cached formula values, embedded charts through the shared DrawingML chart engine (line / area / column / bar / pie / doughnut / scatter / radar, with cell or absolute anchors, theme colors and cached data), **worksheet floating pictures (`<xdr:pic>` with `srcRect` cropping, rotation / flips and an optional outline stroke), DrawingML shapes (`<xdr:sp>` with 26 preset geometries and custom paths, solid / gradient fills, and text boxes at the 11 pt Excel default with theme color inheritance), connectors (`<xdr:cxnSp>` with dashed strokes and arrowheads) and nested groups (`<xdr:grpSp>`, up to 16 levels)** | Formulas and macros are not executed; legacy VML comments and form controls (`<legacyDrawing>`), in-cell pictures (`richData` / `cellimages`), conditional formatting, pivot tables and non-frozen free-split panes are ignored; rich text is merged into plain cell text; charts use cached values with simplified layout, markers and styling; picture masks are drawn with rectangular bounds, and group flips plus picture tiling / effects are not reproduced; conditional comparison sections (`[>0]`, `[<0]`, `[<=100]`), fraction formats (`# ?/?`, built-in `numFmtId 12..=13`), invalid decimal ordering (`0.#0`) and DBNum native numerals (`[DBNum1]`) are not parsed, and such cells together with invalid ISO date text keep their raw value and raise a warning |
+| **CSV / TSV** | Reuses the `Kind::XLSX` sheet model and cross-platform cell selection / TSV copy; auto-detects UTF-8 (with or without BOM), UTF-16LE/BE (with BOM) and GB18030/GBK encodings; supports Excel `sep=<char>` directives and `,` / `;` / `\t` delimiter detection (`.tsv` uses `\t`), RFC 4180 quoting and multi-line cells, preserving leading-zero codes while right-aligning plain numbers | Full parsing reads up to **16 MiB** of raw text (excess is truncated with a warning); inherits XLSX row / column / cell / text budgets; multi-character delimiters, charts and formulas are not supported |
 
 - **Legacy binary formats are not supported**: `.doc`, `.ppt` and `.xls` must first be converted to `.docx`, `.pptx` and `.xlsx` (renaming the extension does not work).
 - **Text selection and copy (Android / HarmonyOS NEXT / macOS)**: DOCX and PPTX body text supports long-press word selection, drag-extended selection with start / end handles, a floating "Copy" / "Select All" bubble, and the `selectAll` / `clearSelection` / `hasSelection` / `getSelectedText` / `copySelection` control API. Selection covers body paragraphs, text boxes, floating wrapped text and embedded table cells across blocks.
@@ -78,14 +79,14 @@ Use `viewer` if you only need to preview local `Uri`s. Use `viewer-online` to al
 ```kotlin
 dependencies {
     // Option 1: local document preview only
-    implementation("io.github.donglua.office:viewer:0.18.0")
+    implementation("io.github.donglua.office:viewer:0.19.0")
 
     // Option 2: online download and cache + local preview
-    implementation("io.github.donglua.office:viewer-online:0.18.0")
+    implementation("io.github.donglua.office:viewer-online:0.19.0")
 }
 ```
 
-> If you copy the AARs from the release assets into a local `libs/` directory, online preview requires both `viewer-0.18.0.aar` and `viewer-online-0.18.0.aar`.
+> If you copy the AARs from the release assets into a local `libs/` directory, online preview requires both `viewer-0.19.0.aar` and `viewer-online-0.19.0.aar`.
 
 ### 2. Local Document Preview
 
@@ -213,7 +214,7 @@ Or add it to the module's `oh-package.json5`:
 ```json5
 {
   "dependencies": {
-    "@jzdy/office": "^0.18.0"
+    "@jzdy/office": "^0.19.0"
   }
 }
 ```

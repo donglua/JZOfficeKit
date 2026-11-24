@@ -1,5 +1,24 @@
 # 更新日志
 
+## 0.19.0
+
+发布页面：[v0.19.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.19.0)。
+
+本版本新增 XLSX 工作表浮动图片、DrawingML 形状/连接线与嵌套组合图形渲染支持，扩展 XLSX 货币、会计、单位字面量、千分位缩放、科学计数法、通用日期时间模板与 ISO 8601 日期支持，并新增 CSV / TSV 纯文本表格预览能力，`schemaVersion` 保持 **9** 不变。
+
+### 排版与特性
+
+- **XLSX 工作表浮动图片、形状、连接线与组合图形（`core` / `viewer-ohos`）**：
+  - `core` 新增工作表 `<xdr:pic>`、`<xdr:sp>`、`<xdr:cxnSp>` 与 `<xdr:grpSp>` 解析；鸿蒙端新增 `SheetImageParts.ts` 并扩展 `SpreadsheetView.ets`、`OfficePreviewView.ets` 与 `OfficeThumbnail.ets`，支持视口可见图片采集与预取、`ImageStore` 按需解码及冻结四象限裁剪与缩略图绘制。
+- **XLSX 数字格式与 ISO 日期扩展（`core`）**：
+  - 新增货币与区域货币标签、会计格式、单位字面量、千分位缩放逗号、科学计数法、通用自定义日期时间模板与 `t="d"` ISO 8601 日期单元格格式化，并修复连续混合大小写日期 token 与单字母分钟 token 解析细节。
+- **CSV / TSV 纯文本表格支持（`core` / `viewer-ohos`）**：
+  - `core` 新增 `.csv` / `.tsv` 解析（UTF-8 / UTF-16 / GB18030 自动解码、分隔符探测与 RFC 4180 规则）并输出 `Kind::XLSX` 模型，鸿蒙端无需额外适配即可直接复用 `SpreadsheetView` 渲染、单元格选区复制与全文检索。
+
+### 测试
+
+- 新增 `core/tests/xlsx_drawings.rs`（17 项）、`xlsx_showcase.rs`（4 项）、`xlsx_formats.rs`（2 项）与 `csv_parsing.rs`（6 项）；扩展鸿蒙端 `scripts/tests/SheetFreezeChecks.ts`（162 → **218** 项检查）覆盖工作表图片可见区采集、四象限裁剪与缩略图绘制。
+
 ## 0.18.0
 
 发布页面：[v0.18.0 Release](https://github.com/donglua/JZOfficeKit/releases/tag/v0.18.0)。
