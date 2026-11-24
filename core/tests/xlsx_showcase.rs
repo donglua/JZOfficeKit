@@ -106,6 +106,63 @@ fn merged_style_example_retains_original_style_and_exposes_size_differences() ->
 }
 
 #[test]
+fn overview_sheet_renders_floating_picture_shape_and_connector() -> TestResult {
+    let demo = parse(&xlsx_showcase::parts())?;
+
+    let elements = demo["sheets"][0]["elements"]
+        .as_array()
+        .ok_or("Overview 工作表应输出浮动元素")?;
+    // 样例包含：1 张浮动图片（含外框描边）、1 个标注形状 + 其文本框、1 条虚线箭头连接线
+    assert!(
+        elements.iter().any(|element| element["type"] == "IMAGE"),
+        "缺少浮动图片元素; kinds={:?}",
+        elements
+            .iter()
+            .map(|element| element["type"].clone())
+            .collect::<Vec<_>>()
+    );
+    let image = elements
+        .iter()
+        .find(|element| element["type"] == "IMAGE")
+        .ok_or("缺少浮动图片元素")?;
+    assert_eq!(image["image"], "xl/media/logo.png");
+    assert!(image["width"].as_f64().unwrap_or_default() > 0.0);
+    assert!(image["imageBounds"]
+        .as_array()
+        .is_some_and(|b| b.len() == 4));
+
+    // 标注形状与连接线都编译为 PATH；虚线只出现在带 prstDash 的连接线上
+    assert!(
+        elements.iter().any(|element| {
+            element["type"] == "PATH"
+                && element["strokeDash"]
+                    .as_array()
+                    .is_some_and(|dash| !dash.is_empty())
+        }),
+        "缺少虚线连接线元素; kinds={:?}",
+        elements
+            .iter()
+            .map(|element| element["type"].clone())
+            .collect::<Vec<_>>()
+    );
+
+    assert!(
+        elements.iter().any(|element| {
+            element["type"] == "TEXT"
+                && element["paragraphs"].as_array().is_some_and(|paragraphs| {
+                    paragraphs.iter().any(|p| {
+                        p["runs"].as_array().is_some_and(|runs| {
+                            runs.iter().any(|run| run["text"] == "浮动图片与形状")
+                        })
+                    })
+                })
+        }),
+        "缺少标注形状的文本框元素"
+    );
+    Ok(())
+}
+
+#[test]
 fn sparse_scrolling_ruler_keeps_both_axes_and_regular_checkpoints() -> TestResult {
     let parts = xlsx_showcase::parts();
 

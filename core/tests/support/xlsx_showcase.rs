@@ -4,7 +4,17 @@ pub fn parts() -> Parts {
     let mut parts = xlsx::parts();
     for (name, bytes) in &mut parts {
         let replacement = match *name {
-            "xl/worksheets/sheet2.xml" => Some(overview()),
+            // Overview 是首个展示的工作表，在其上挂载浮动图片、标注形状与连接线
+            "xl/worksheets/sheet2.xml" => Some(
+                overview()
+                    // 工作表根节点需要声明 r 前缀才能引用 drawing 关系
+                    .replacen(
+                        r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">"#,
+                        r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+                        1,
+                    )
+                    .replace("</worksheet>", r#"<drawing r:id="rDrawing"/></worksheet>"#),
+            ),
             "xl/worksheets/sheet1.xml" => Some(data()),
             "xl/styles.xml" => Some(styles()),
             _ => None,
@@ -13,7 +23,32 @@ pub fn parts() -> Parts {
             *bytes = text.into_bytes();
         }
     }
+    parts.push((
+        "xl/worksheets/_rels/sheet2.xml.rels",
+        r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rDrawing" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>"#
+            .as_bytes()
+            .to_vec(),
+    ));
+    parts.push(("xl/drawings/drawing1.xml", drawing().into_bytes()));
+    parts.push((
+        "xl/drawings/_rels/drawing1.xml.rels",
+        r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rLogo" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/logo.png"/></Relationships>"#
+            .as_bytes()
+            .to_vec(),
+    ));
+    parts.push(("xl/media/logo.png", super::package::PNG.to_vec()));
     parts
+}
+
+/// Overview 工作表上的文档级图形：浮动图片（带裁剪与外框）、标注形状（含文本）、
+/// 虚线箭头连接线。坐标对应 C2:D5 区域附近，保证首屏可见。
+fn drawing() -> String {
+    r#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<xdr:oneCellAnchor><xdr:from><xdr:col>3</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="1143000" cy="857250"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="1" name="Logo"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rLogo"/><a:srcRect l="10000" t="10000" r="10000" b="10000"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:ln w="12700"><a:solidFill><a:srgbClr val="1A73E8"/></a:solidFill></a:ln></xdr:spPr></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>
+<xdr:twoCellAnchor><xdr:from><xdr:col>3</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>4</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>4</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>6</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:sp><xdr:nvSpPr><xdr:cNvPr id="2" name="Callout"/><xdr:cNvSpPr/></xdr:nvSpPr><xdr:spPr><a:prstGeom prst="wedgeRectCallout"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="FFF7E0"/></a:solidFill><a:ln w="12700"><a:solidFill><a:srgbClr val="F9AB00"/></a:solidFill></a:ln></xdr:spPr><xdr:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="zh-CN"/><a:t>浮动图片与形状</a:t></a:r></a:p></xdr:txBody></xdr:sp><xdr:clientData/></xdr:twoCellAnchor>
+<xdr:twoCellAnchor><xdr:from><xdr:col>4</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>5</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>4</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:cxnSp><xdr:nvCxnSpPr><xdr:cNvPr id="3" name="Arrow"/><xdr:cNvCxnSpPr/></xdr:nvCxnSpPr><xdr:spPr><a:prstGeom prst="line"><a:avLst/></a:prstGeom><a:ln w="25400"><a:solidFill><a:srgbClr val="E53935"/></a:solidFill><a:prstDash val="dash"/><a:tailEnd type="triangle"/></a:ln></xdr:spPr></xdr:cxnSp><xdr:clientData/></xdr:twoCellAnchor>
+</xdr:wsDr>"#
+        .to_owned()
 }
 
 fn overview() -> String {
