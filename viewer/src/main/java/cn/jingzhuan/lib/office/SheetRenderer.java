@@ -1,5 +1,6 @@
 package cn.jingzhuan.lib.office;
 
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.RectF;
@@ -14,6 +15,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 final class SheetRenderer {
     static final float HEADER_WIDTH = 42, HEADER_HEIGHT = 20;
@@ -55,6 +57,8 @@ final class SheetRenderer {
     /** 工作表浮动元素复用通用元素排版与绘制，状态不与单元格 Paint 混用 */
     private final OfficeRenderer drawingRenderer = new OfficeRenderer();
     private final List<OfficeRenderer.Element> drawingElements = new ArrayList<>();
+    /** 本表是否含可解码的 IMAGE 元素：纯图表/无图工作表据此跳过整轮可见图片收集 */
+    private boolean hasImageElements;
     /** 当前帧的冻结几何，draw 计算出后供各绘制阶段与外部高亮避让复用 */
     private FreezePlan plan;
     /** 当前选区（供行列标头联动高亮使用）；由 {@link #setSelection} 由外部同步 */
@@ -90,7 +94,7 @@ final class SheetRenderer {
         sheet = null; styles = Collections.emptyList(); rows = columns = null;
         layout = null; width = height = 0;
         merges.clear(); visibleMerges.clear(); layouts.clear(); layoutCost = 0;
-        drawingElements.clear(); drawingRenderer.clear();
+        drawingElements.clear(); drawingRenderer.clear(); hasImageElements = false;
         mergeBuckets = null; plan = null; selection = null;
     }
 
@@ -126,22 +130,65 @@ final class SheetRenderer {
         mergeBuckets = buckets;
         // core 已烘焙 frame 平移与 flip；非流式排版只消费 transform，不再补 source.x/y。
         for (OfficeDocument.Element source : selected.elements) {
+            if (source.type == OfficeDocument.Type.IMAGE && source.image != null) hasImageElements = true;
             drawingElements.add(drawingRenderer.element(source, source.width, false, null));
         }
     }
 
     void draw(Canvas canvas, RectF viewport) {
+        draw(canvas, viewport, Collections.emptyMap());
+    }
+
+    /**
+     * 绘制整张工作表：正文四象限、表头与冻结交界线。
+     *
+     * @param canvas   已应用"文档坐标 → 屏幕"变换的画布
+     * @param viewport 当前可见的文档坐标视口
+     * @param bitmaps  已解码的图片部件路径 → Bitmap；为空映射时 IMAGE 元素绘制灰色占位
+     */
+    void draw(Canvas canvas, RectF viewport, Map<String, Bitmap> bitmaps) {
         if (sheet == null || viewport.isEmpty()) return;
+        Map<String, Bitmap> availableImages = bitmaps != null ? bitmaps : Collections.emptyMap();
         plan = computePlan(sheet, columns, rows, width, height, viewport);
         int save = canvas.save();
         canvas.clipRect(viewport);
         // 四象限正文绘制，从底到顶：滚动正文 → 冻结列 → 冻结行 → 交叉角
         for (Quadrant quadrant : quadrants(plan)) {
-            drawQuadrant(canvas, quadrant);
+            drawQuadrant(canvas, quadrant, availableImages);
         }
         drawHeaders(canvas, viewport);
         drawFreezeDivider(canvas, viewport);
         canvas.restoreToCount(save);
+    }
+
+    /**
+     * 收集当前视口内可见的 IMAGE 部件路径，供外部按需解码。
+     *
+     * <p>与 {@link #draw} 共享同一套 {@link #computePlan} 四象限几何：图片随所在象限平移后
+     * 与象限裁剪区求交，只有真正落在屏幕内的部件才会进入 {@code out}，
+     * 从而在滚出视口后由 {@code OfficeImages} 的 LRU 自然淘汰。
+     * 结果保持遍历顺序以便解码优先级稳定。
+     *
+     * @param viewport 当前可见的文档坐标视口
+     * @param out      收集目标，通常为复用的 {@code LinkedHashSet}；调用方负责先清空
+     */
+    void collectVisibleImages(RectF viewport, Set<String> out) {
+        if (sheet == null || viewport.isEmpty() || !hasImageElements) return;
+        FreezePlan geometry = computePlan(sheet, columns, rows, width, height, viewport);
+        for (Quadrant quadrant : quadrants(geometry)) {
+            if (quadrant.isEmpty()) continue;
+            float offsetX = HEADER_WIDTH + quadrant.translateX;
+            float offsetY = HEADER_HEIGHT + quadrant.translateY;
+            for (OfficeRenderer.Element element : drawingElements) {
+                if (element.source.type != OfficeDocument.Type.IMAGE || element.source.image == null) continue;
+                // bounds 已由 OfficeRenderer.position 套用完整 transform（含旋转/翻转后的外接框）
+                elementBounds.set(element.bounds);
+                elementBounds.offset(offsetX, offsetY);
+                if (elementBounds.right <= quadrant.clipLeft || elementBounds.left >= quadrant.clipRight
+                    || elementBounds.bottom <= quadrant.clipTop || elementBounds.top >= quadrant.clipBottom) continue;
+                out.add(element.source.image);
+            }
+        }
     }
 
     /**
@@ -221,7 +268,7 @@ final class SheetRenderer {
      * 绘制单个象限：save -> clipRect -> 填充白底 -> 普通单元格 -> 网格线 ->
      * 相交合并单元格 -> 单元格边框 -> 浮动元素 -> restore。
      */
-    private void drawQuadrant(Canvas canvas, Quadrant quadrant) {
+    private void drawQuadrant(Canvas canvas, Quadrant quadrant, Map<String, Bitmap> bitmaps) {
         if (quadrant.isEmpty()) return;
         int quadrantSave = canvas.save();
         canvas.clipRect(quadrant.clipLeft, quadrant.clipTop, quadrant.clipRight, quadrant.clipBottom);
@@ -238,12 +285,12 @@ final class SheetRenderer {
             shifted(merge, quadrant, shiftedBounds);
             drawBorders(canvas, shiftedBounds, style(merge.anchor));
         }
-        drawDrawingElements(canvas, quadrant);
+        drawDrawingElements(canvas, quadrant, bitmaps);
         canvas.restoreToCount(quadrantSave);
     }
 
     /** 浮动元素使用数据区坐标，只补一次表头与当前冻结象限平移，并由象限 clip 限制漏色。 */
-    private void drawDrawingElements(Canvas canvas, Quadrant quadrant) {
+    private void drawDrawingElements(Canvas canvas, Quadrant quadrant, Map<String, Bitmap> bitmaps) {
         if (drawingElements.isEmpty()) return;
         float offsetX = HEADER_WIDTH + quadrant.translateX;
         float offsetY = HEADER_HEIGHT + quadrant.translateY;
@@ -254,8 +301,7 @@ final class SheetRenderer {
             elementBounds.offset(offsetX, offsetY);
             if (elementBounds.right <= quadrant.clipLeft || elementBounds.left >= quadrant.clipRight
                 || elementBounds.bottom <= quadrant.clipTop || elementBounds.top >= quadrant.clipBottom) continue;
-            // 当前共享图表引擎不输出 IMAGE；未来支持图片元素时需接入 XLSX 图片预算与生命周期。
-            drawingRenderer.drawElement(canvas, element, Collections.emptyMap());
+            drawingRenderer.drawElement(canvas, element, bitmaps);
         }
         canvas.restoreToCount(save);
     }

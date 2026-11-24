@@ -32,7 +32,9 @@ import android.widget.OverScroller;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -175,10 +177,11 @@ public final class OfficePreviewView extends View {
     private int generation;
     private OfficeDocument document;
     private OfficeImages images;
-    private OfficePackage spreadsheetPackage;
     private final OfficeRenderer renderer = new OfficeRenderer();
     private final SheetRenderer sheetRenderer = new SheetRenderer();
     private final RectF sheetViewport = new RectF();
+    /** 表格当前帧可见的图片部件；复用同一集合避免 onDraw 每帧分配 */
+    private final Set<String> wantedImages = new LinkedHashSet<>();
     private OnPageChangeListener pageListener;
     private final List<OnPageChangeListener> pageListeners = new ArrayList<>();
     private int currentPage, notifiedPage, notifiedCount, pendingJumpPage, announcedPage;
@@ -381,9 +384,9 @@ public final class OfficePreviewView extends View {
                     currentFilePath = filePath;
                     clearSearch();
                     document = loaded; status = ""; currentPage = 1;
+                    // 三种格式统一由 OfficeImages 管理图片 LRU 与 ZIP 生命周期（XLSX 浮动图片同样需要）
+                    images = new OfficeImages(source, this::invalidate, listener);
                     if (isSpreadsheet()) {
-                        releaseSpreadsheetPackage();
-                        spreadsheetPackage = source;
                         if (hasRestoredState && restoredPage > 1 && restoredPage <= loaded.sheets.size()) {
                             sheetRenderer.setSheet(loaded.sheets.get(restoredPage - 1), loaded.cellStyles);
                             currentPage = restoredPage;
@@ -392,7 +395,6 @@ public final class OfficePreviewView extends View {
                         }
                         contentWidth = sheetRenderer.width; contentHeight = sheetRenderer.height;
                     } else {
-                        images = new OfficeImages(source, this::invalidate, listener);
                         renderer.adopt(preparedRenderer);
                         contentWidth = renderer.width; contentHeight = renderer.height;
                         if (hasRestoredState && restoredPage >= 1 && restoredPage <= renderer.pages.size()) {
@@ -664,15 +666,9 @@ public final class OfficePreviewView extends View {
     }
 
     private void releaseImages() {
+        // OfficeImages 持有当前文档的 OfficePackage（含 XLSX），close() 会异步关闭 ZIP 句柄
         if (images != null) { images.close(); images = null; }
-        releaseSpreadsheetPackage();
-    }
-
-    private void releaseSpreadsheetPackage() {
-        if (spreadsheetPackage != null) {
-            closePackage(spreadsheetPackage);
-            spreadsheetPackage = null;
-        }
+        wantedImages.clear();
     }
 
     private static void closePackage(OfficePackage source) {
@@ -927,7 +923,12 @@ public final class OfficePreviewView extends View {
         float visibleRight = visibleLeft + getWidth() / scale();
         if (isSpreadsheet()) {
             sheetViewport.set(visibleLeft, visibleTop, visibleRight, visibleBottom);
-            sheetRenderer.draw(canvas, sheetViewport);
+            if (images != null) {
+                wantedImages.clear();
+                sheetRenderer.collectVisibleImages(sheetViewport, wantedImages);
+                images.request(wantedImages);
+            }
+            sheetRenderer.draw(canvas, sheetViewport, images != null ? images.bitmaps : Collections.emptyMap());
         } else {
             images.request(renderer.visibleImages(visibleLeft, visibleTop, visibleRight, visibleBottom, currentPage - 1));
             renderer.draw(canvas, visibleTop, visibleBottom, images.bitmaps);

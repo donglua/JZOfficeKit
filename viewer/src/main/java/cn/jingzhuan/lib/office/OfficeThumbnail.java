@@ -9,6 +9,7 @@ import android.os.Handler;
 import android.os.Looper;
 import java.io.IOException;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Future;
@@ -71,7 +72,7 @@ public final class OfficeThumbnail {
             } else if (document.kind == OfficeDocument.Kind.DOCX) {
                 return renderDocxThumbnail(pkg, document, maxTargetWidth, maxTargetHeight);
             } else if (document.kind == OfficeDocument.Kind.XLSX) {
-                return renderXlsxThumbnail(document, maxTargetWidth, maxTargetHeight);
+                return renderXlsxThumbnail(pkg, document, maxTargetWidth, maxTargetHeight);
             } else {
                 throw new IOException("Unsupported document format: " + document.kind);
             }
@@ -157,7 +158,12 @@ public final class OfficeThumbnail {
         return bitmap;
     }
 
+    /** 保留无图片包的内部入口，供既有离屏表格测试与调用方复用。 */
     private static Bitmap renderXlsxThumbnail(OfficeDocument doc, int maxW, int maxH) throws IOException {
+        return renderXlsxThumbnail(null, doc, maxW, maxH);
+    }
+
+    private static Bitmap renderXlsxThumbnail(OfficePackage pkg, OfficeDocument doc, int maxW, int maxH) throws IOException {
         if (doc.sheets.isEmpty()) throw new IOException("Spreadsheet has no sheets");
         SpreadsheetDocument.Sheet sheet = doc.sheets.get(0);
         SheetLayout sheetLayout = new SheetLayout(sheet, SheetRenderer.HEADER_WIDTH, SheetRenderer.HEADER_HEIGHT);
@@ -178,7 +184,27 @@ public final class OfficeThumbnail {
         canvas.drawColor(0xffffffff);
         canvas.scale(scale, scale);
 
-        sheetRenderer.draw(canvas, new RectF(0, 0, previewW, previewH));
+        // 首屏可见图片同步解码：预算按可见数量均分，避免大图挤占整份额度
+        RectF viewport = new RectF(0, 0, previewW, previewH);
+        Set<String> needed = new LinkedHashSet<>();
+        sheetRenderer.collectVisibleImages(viewport, needed);
+        Map<String, Bitmap> decodedImages = new HashMap<>();
+        long pixelBudget = OfficeImages.MAX_PIXELS / Math.max(1, needed.size());
+        try {
+            if (pkg != null) {
+                for (String part : needed) {
+                    OfficePackage.Image img = pkg.image(part, pixelBudget);
+                    if (img != null && img.bitmap != null) {
+                        decodedImages.put(part, img.bitmap);
+                    }
+                }
+            }
+            sheetRenderer.draw(canvas, viewport, decodedImages);
+        } finally {
+            for (Bitmap img : decodedImages.values()) {
+                if (img != null && !img.isRecycled()) img.recycle();
+            }
+        }
         return bitmap;
     }
 

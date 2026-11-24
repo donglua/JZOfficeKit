@@ -9,6 +9,7 @@ public final class DocumentDecoderChecks {
     public static void main(String[] args) throws Exception {
         checkSpreadsheetDecodeAndValidation();
         checkSheetDrawingElements();
+        checkSheetImageAndShapeElements();
         checkPptxAndDocxWithOmittedFields();
         checkTypographyAndStyleFields();
         checkFloatingWrapFields();
@@ -420,6 +421,75 @@ public final class DocumentDecoderChecks {
             && boundary.sheets.get(1).elements.size() == 2500, "5000 workbook drawing elements accepted");
         reject(workbookWithSheetElements(2500, 2501),
             "Invalid core display model", "5001 workbook drawing elements rejected");
+    }
+
+    /** 工作表内嵌图片、预设形状与文本框元素的解码、字段保留与 5,000 元素上限拦截 */
+    private static void checkSheetImageAndShapeElements() throws Exception {
+        OfficeDocument decoded = DocumentDecoder.decode(workbookWithMixedDrawingElements());
+        SpreadsheetDocument.Sheet sheet = decoded.sheets.get(0);
+        check(sheet.elements.size() == 3, "IMAGE/PATH/TEXT sheet elements decoded");
+
+        OfficeDocument.Element image = sheet.elements.get(0);
+        check(image.type == OfficeDocument.Type.IMAGE && "xl/media/image1.png".equals(image.image),
+            "sheet IMAGE element carries media part");
+        check(Arrays.equals(image.imageBounds, new float[] {-10, 0, 110, 50}),
+            "sheet IMAGE imageBounds decoded (srcRect crop)");
+        check(Arrays.equals(image.transform, new float[] {1, 0, 0, 1, 30, 40}),
+            "sheet IMAGE baked transform retained");
+        check(image.x == 20 && image.y == 30 && image.width == 120 && image.height == 60,
+            "sheet IMAGE geometry decoded");
+
+        OfficeDocument.Element path = sheet.elements.get(1);
+        check(path.type == OfficeDocument.Type.PATH && path.paths.size() == 1,
+            "sheet PATH element with one geometry decoded");
+        check(path.paths.get(0).commands.size() == 3 && path.paths.get(0).fill,
+            "sheet PATH commands and fill flag decoded");
+        check(Arrays.equals(path.transform, new float[] {0, 1, -1, 0, 200, 10}),
+            "sheet PATH rotated transform retained");
+
+        OfficeDocument.Element text = sheet.elements.get(2);
+        check(text.type == OfficeDocument.Type.TEXT && text.paragraphs.size() == 1,
+            "sheet TEXT element with paragraph decoded");
+        check("标签".equals(text.paragraphs.get(0).runs.get(0).text),
+            "sheet TEXT paragraph run text decoded");
+
+        // 无绘图工作表仍保持空列表，纯图表/无图路径零额外开销
+        check(DocumentDecoder.decode(workbookWithSheetElements(0)).sheets.get(0).elements.isEmpty(),
+            "workbook without drawings keeps empty sheet elements");
+
+        // imageBounds 反向区间由解码器拒绝（core 已保证左<右、上<下）
+        reject(workbookWithMixedDrawingElements().replace("[-10,0,110,50]", "[110,0,-10,50]"),
+            "Invalid core display model", "reversed sheet imageBounds X");
+
+        // 5,000 为跨工作表累计预算：恰好 5,000 通过，5,001 拒绝
+        OfficeDocument boundary = DocumentDecoder.decode(workbookWithSheetElements(2500, 2500));
+        check(boundary.sheets.get(0).elements.size() == 2500
+            && boundary.sheets.get(1).elements.size() == 2500, "5000 sheet drawing elements accepted");
+        reject(workbookWithSheetElements(2500, 2501),
+            "Invalid core display model", "5001 sheet drawing elements rejected");
+    }
+
+    /** 工作表内嵌图片（含裁剪与旋转）、PATH 箭头与 TEXT 文本框的顺序混排元素校验。 */
+    private static String workbookWithMixedDrawingElements() {
+        String image = "{\"type\":\"IMAGE\",\"x\":20,\"y\":30,\"width\":120,\"height\":60,\"padding\":0,"
+            + "\"transform\":[1,0,0,1,30,40],\"fill\":0,\"stroke\":0,\"strokeWidth\":0,"
+            + "\"verticalAlignment\":\"TOP\",\"textWrap\":true,"
+            + "\"image\":\"xl/media/image1.png\",\"imageBounds\":[-10,0,110,50]}";
+        String path = "{\"type\":\"PATH\",\"x\":0,\"y\":0,\"width\":80,\"height\":40,\"padding\":0,"
+            + "\"transform\":[0,1,-1,0,200,10],\"fill\":4281348144,\"stroke\":4278190080,\"strokeWidth\":1.5,"
+            + "\"verticalAlignment\":\"TOP\",\"textWrap\":true,"
+            + "\"paths\":[{\"fill\":true,\"stroke\":true,\"commands\":["
+            + "{\"op\":\"MOVE\",\"points\":[0,0]},{\"op\":\"LINE\",\"points\":[80,40]},{\"op\":\"CLOSE\"}]}]}";
+        String text = "{\"type\":\"TEXT\",\"x\":10,\"y\":10,\"width\":100,\"height\":30,\"padding\":4,"
+            + "\"transform\":[1,0,0,1,10,10],\"fill\":0,\"stroke\":0,\"strokeWidth\":0,"
+            + "\"verticalAlignment\":\"CENTER\",\"textWrap\":true,"
+            + "\"paragraphs\":[" + paragraph("标签") + "]}";
+        return "{\"schemaVersion\":9,\"kind\":\"XLSX\",\"width\":1,\"warnings\":[],\"blocks\":[],\"pages\":[],"
+            + "\"cellStyles\":[{\"fontSize\":11,\"bold\":false,\"italic\":false,\"underline\":false,\"color\":0,"
+            + "\"fill\":0,\"alignment\":3,\"verticalAlignment\":\"BOTTOM\",\"wrap\":false,"
+            + "\"borders\":[null,null,null,null]}],"
+            + "\"sheets\":[{\"name\":\"S0\",\"rowHeights\":[20],\"columnWidths\":[20],"
+            + "\"cells\":[],\"merges\":[],\"elements\":[" + image + "," + path + "," + text + "]}]}";
     }
 
     private static void checkPptxAndDocxWithOmittedFields() throws Exception {
