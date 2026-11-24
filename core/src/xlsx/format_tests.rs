@@ -87,13 +87,8 @@ displays! {
     supported_sections_zero_literal: ("0", "#,##0.00;(#,##0.00);\"-\"", false) => Some("-");
     supported_pure_time_with_datetime_format: ("0.5", "m/d/yy h:mm", false) => Some("1/0/00 12:00");
     unsupported_conditions: ("12", "[>0]0", false) => None;
-    unsupported_currency: ("12", "$0.00", false) => None;
     unsupported_fraction: ("12.5", "# ?/?", false) => None;
-    unsupported_scale_comma: ("12000", "0,", false) => None;
     unsupported_optional_then_mandatory: ("1.23", "0.#0", false) => None;
-    unsupported_scientific_code: ("123", "0.00E+00", false) => None;
-    unsupported_literal: ("123", "0\" kg\"", false) => None;
-    unsupported_trailing_space: ("123", "0 ", false) => None;
     unsupported_empty_code: ("123", "", false) => None;
     invalid_nan: ("NaN", "0.00", false) => None;
     invalid_infinity: ("inf", "yyyy-mm-dd", false) => None;
@@ -101,6 +96,73 @@ displays! {
     invalid_double_sign: ("--1", "0", false) => None;
     invalid_extra_dot: ("1.2.3", "0", false) => None;
     invalid_empty_number: ("", "0", false) => None;
+}
+
+// 货币符号、区域货币标签与负号放置
+displays! {
+    currency_dollar: ("1234.5", "$#,##0.00", false) => Some("$1,234.50");
+    currency_negative_single_section: ("-12.5", "$0.00", false) => Some("-$12.50");
+    currency_locale_cny: ("1234.5", "[$¥-804]#,##0.00", false) => Some("¥1,234.50");
+    currency_locale_usd_code: ("12.3", "[$USD] 0.00", false) => Some("USD 12.30");
+    currency_section_negative_parentheses: ("-1234.5", "$#,##0.00;($#,##0.00)", false) => Some("($1,234.50)");
+    currency_builtin_positive: ("1234.5", "$#,##0.00;[Red]($#,##0.00)", false) => Some("$1,234.50");
+    currency_builtin_negative: ("-1234.5", "$#,##0.00;[Red]($#,##0.00)", false) => Some("($1,234.50)");
+}
+
+// 会计格式：下划线留白与 `*` 填充符
+displays! {
+    accounting_positive: ("1234.5", "_(\"$\"* #,##0.00_);_(\"$\"* (#,##0.00);_(\"$\"* \"-\"??_);_(@_)", false) => Some("$ 1,234.50");
+    accounting_negative: ("-1234.5", "_(\"$\"* #,##0.00_);_(\"$\"* (#,##0.00);_(\"$\"* \"-\"??_);_(@_)", false) => Some("$ (1,234.50)");
+    accounting_zero: ("0", "_(\"$\"* #,##0.00_);_(\"$\"* (#,##0.00);_(\"$\"* \"-\"??_);_(@_)", false) => Some("$ -");
+    accounting_plain_positive: ("1234.5", "_(* #,##0_);_(* (#,##0);_(* \"-\"_);_(@_)", false) => Some(" 1,235");
+    accounting_plain_negative: ("-1234.5", "_(* #,##0_);_(* (#,##0);_(* \"-\"_);_(@_)", false) => Some(" (1,235)");
+    accounting_plain_zero: ("0", "_(* #,##0_);_(* (#,##0);_(* \"-\"_);_(@_)", false) => Some(" -");
+    accounting_text_section: ("12", "\"N/A\";\"N/A\";\"N/A\";_(@_)", false) => Some("N/A");
+}
+
+// 千分位缩放逗号、单位字面量与转义文本
+displays! {
+    scale_thousands: ("12000", "0,", false) => Some("12");
+    scale_millions_grouped: ("12345678", "#,##0.0,,\" M\"", false) => Some("12.3 M");
+    literal_unit_suffix: ("123", "0\" kg\"", false) => Some("123 kg");
+    literal_chinese_unit: ("12", "0\"万元\"", false) => Some("12万元");
+    escaped_unit_suffix: ("12", "0\\ 元", false) => Some("12 元");
+    trailing_literal_space: ("123", "0 ", false) => Some("123 ");
+    percent_literal_suffix: ("0.5", "0.0%\" of\"", false) => Some("50.0% of");
+}
+
+// 科学计数法与工程步长
+displays! {
+    scientific_standard: ("123", "0.00E+00", false) => Some("1.23E+02");
+    scientific_small_negative_exp: ("0.00123", "0.00E+00", false) => Some("1.23E-03");
+    scientific_minus_only_positive: ("123", "0.00E-0", false) => Some("1.23E2");
+    scientific_lowercase: ("1234", "0.0e+0", false) => Some("1.2e+3");
+    scientific_carry_across_decade: ("9.995", "0.00E+00", false) => Some("1.00E+01");
+    scientific_engineering_step: ("12345", "##0.0E+0", false) => Some("12.3E+3");
+    scientific_zero: ("0", "0.00E+00", false) => Some("0.00E+00");
+    scientific_with_prefix_unit: ("-4500", "$0.0E+00", false) => Some("-$4.5E+03");
+    scientific_builtin_id_11: ("123", "0.00E+00", false) => Some("1.23E+02");
+    scientific_engineering_small: ("0.000123", "##0.0E+0", false) => Some("123.0E-6");
+}
+
+// 通用日期时间模板：中文/斜杠/星期/月名/小数秒/A-P
+displays! {
+    chinese_literal_date: ("45292", "yyyy\"年\"m\"月\"d\"日\"", false) => Some("2024年1月1日");
+    slash_date: ("45292", "yyyy/m/d", false) => Some("2024/1/1");
+    weekday_and_full_month: ("45292", "dddd, mmmm d, yyyy", false) => Some("Monday, January 1, 2024");
+    short_weekday_and_initial_month: ("45292", "ddd mmmmm-yy", false) => Some("Mon J-24");
+    short_month_name: ("45292", "mmm d", false) => Some("Jan 1");
+    subsecond_elapsed: ("0.0011574074", "mm:ss.0", false) => Some("01:40.0");
+    short_meridiem: ("0.75", "h:mm A/P", false) => Some("6:00 P");
+    short_meridiem_am: ("0.25", "h:mm A/P", false) => Some("6:00 A");
+    lowercase_meridiem: ("0.75", "h:mm am/pm", false) => Some("6:00 pm");
+    minute_before_second_disambiguation: ("0.0625", "m:ss", false) => Some("30:00");
+    month_before_second_stays_month: ("45292", "m/d", false) => Some("1/1");
+    elapsed_minutes_and_seconds: ("0.0625", "[m]:ss", false) => Some("90:00");
+    elapsed_seconds: ("0.0625", "[s]", false) => Some("5400");
+    chinese_datetime: ("45292.5", "yyyy\"年\"m\"月\"d\"日\" h\"时\"", false) => Some("2024年1月1日 12时");
+    weekday_mismatch_guard: ("1", "dddd", false) => Some("Sunday");
+    weekday_after_fake_leap: ("61", "dddd", false) => Some("Thursday");
 }
 
 #[test]
@@ -111,8 +173,13 @@ fn builtin_codes_match_supported_standard_ids() {
         (2, "0.00"),
         (3, "#,##0"),
         (4, "#,##0.00"),
+        (5, "$#,##0;($#,##0)"),
+        (6, "$#,##0;[Red]($#,##0)"),
+        (7, "$#,##0.00;($#,##0.00)"),
+        (8, "$#,##0.00;[Red]($#,##0.00)"),
         (9, "0%"),
         (10, "0.00%"),
+        (11, "0.00E+00"),
         (14, "mm-dd-yy"),
         (15, "d-mmm-yy"),
         (16, "d-mmm"),
@@ -122,8 +189,24 @@ fn builtin_codes_match_supported_standard_ids() {
         (20, "h:mm"),
         (21, "h:mm:ss"),
         (22, "m/d/yy h:mm"),
+        (37, "#,##0;(#,##0)"),
+        (38, "#,##0;[Red](#,##0)"),
+        (39, "#,##0.00;(#,##0.00)"),
+        (40, "#,##0.00;[Red](#,##0.00)"),
+        (41, "_(* #,##0_);_(* (#,##0);_(* \"-\"_);_(@_)"),
+        (
+            42,
+            "_(\"$\"* #,##0_);_(\"$\"* (#,##0);_(\"$\"* \"-\"_);_(@_)",
+        ),
+        (43, "_(* #,##0.00_);_(* (#,##0.00);_(* \"-\"??_);_(@_)"),
+        (
+            44,
+            "_(\"$\"* #,##0.00_);_(\"$\"* (#,##0.00);_(\"$\"* \"-\"??_);_(@_)",
+        ),
         (45, "mm:ss"),
         (46, "[h]:mm:ss"),
+        (47, "mm:ss.0"),
+        (48, "##0.0E+0"),
         (49, "@"),
     ];
     for (id, code) in expected {
@@ -134,7 +217,7 @@ fn builtin_codes_match_supported_standard_ids() {
 
 #[test]
 fn unsupported_builtin_ids_defer_to_caller() {
-    for id in [5, 11, 12, 13, 23, 27, 37, 38, 47, 48, 164, u32::MAX] {
+    for id in [12, 13, 23, 27, 164, u32::MAX] {
         let actual = builtin(id);
         assert_eq!(actual, None, "built-in {id}");
     }
@@ -145,8 +228,27 @@ fn long_values_and_precision_requests_are_bounded() {
     for (raw, code) in [
         ("1".repeat(1024), "0".into()),
         ("1".into(), format!("0.{}", "0".repeat(1000))),
+        ("1".into(), "0".repeat(200)),
+        ("1".into(), format!("0.{}E+00", "0".repeat(40))),
     ] {
         let actual = display(&raw, &code, false);
         assert_eq!(actual, None);
+    }
+}
+
+#[test]
+fn scientific_and_scaled_rendering_stays_bounded() {
+    // 极端指数与缩放组合只允许精确输出或安全回退，绝不 panic
+    for (raw, code) in [
+        ("1e300", "0.00E+00"),
+        ("1e-300", "0.00E+00"),
+        ("9007199254740993", "##0.0E+0"),
+        ("1", "0,,,,,,,,,"),
+        ("123456789012345678901234567890", "#,##0.00,,"),
+    ] {
+        let rendered = display(raw, code, false);
+        if let Some(text) = rendered {
+            assert!(!text.is_empty(), "{raw} / {code} rendered empty output");
+        }
     }
 }
