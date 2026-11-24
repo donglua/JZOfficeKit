@@ -1,4 +1,5 @@
 mod chart;
+mod csv;
 mod docx;
 mod metadata;
 pub mod model;
@@ -70,7 +71,19 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// 解析完整文档模型。默认不构建全文检索索引；索引会在首次搜索时按需建立。
 pub fn parse_path(path: &Path) -> Result<model::Document> {
-    parse_reader(std::fs::File::open(path)?)
+    parse_path_scoped(path, Scope::Full)
+}
+
+/// 按指定范围从磁盘路径解析文档（支持 OOXML 与 `.csv` / `.tsv`）
+fn parse_path_scoped(path: &Path, scope: Scope) -> Result<model::Document> {
+    if let Some(delimited_kind) = csv::detect_path_kind(path) {
+        let mut file = std::fs::File::open(path)?;
+        if !csv::has_zip_signature(&mut file)? {
+            return csv::parse_file(file, path, delimited_kind, scope);
+        }
+        return parse_reader_scoped(file, scope);
+    }
+    parse_reader_scoped(std::fs::File::open(path)?, scope)
 }
 
 pub fn parse_path_to_json(path: &Path) -> Result<String> {
@@ -86,7 +99,7 @@ pub fn parse_path_to_json(path: &Path) -> Result<String> {
 /// 作为键命中，跳过重复的 ZIP 解压、XML 解析与 JSON 序列化。
 pub fn parse_path_scoped_to_json(path: &Path, scope: Scope) -> Result<String> {
     parse_cache::cached_json(path, parse_cache::Family::Document(scope), || {
-        let document = parse_reader_scoped(std::fs::File::open(path)?, scope)?;
+        let document = parse_path_scoped(path, scope)?;
         let json = serde_json::to_string(&document)?;
         drop(document);
         Ok(json)
@@ -96,8 +109,18 @@ pub fn parse_path_scoped_to_json(path: &Path, scope: Scope) -> Result<String> {
 /// 轻量元数据速读：只读取格式与页数所需的部件，输出与完整解析同形的空壳模型
 pub fn metadata_path_to_json(path: &Path) -> Result<String> {
     parse_cache::cached_json(path, parse_cache::Family::Metadata, || {
-        let mut package = Package::new(std::fs::File::open(path)?)?;
-        let document = metadata::read(&mut package)?;
+        let document = if csv::detect_path_kind(path).is_some() {
+            let mut file = std::fs::File::open(path)?;
+            if !csv::has_zip_signature(&mut file)? {
+                csv::metadata_file(file, path)?
+            } else {
+                let mut package = Package::new(file)?;
+                metadata::read(&mut package)?
+            }
+        } else {
+            let mut package = Package::new(std::fs::File::open(path)?)?;
+            metadata::read(&mut package)?
+        };
         Ok(serde_json::to_string(&document)?)
     })
 }

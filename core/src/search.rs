@@ -145,7 +145,7 @@ fn get_or_build_index(path: &Path) -> Result<Arc<SearchIndex>> {
         }
     }
 
-    let document = crate::parse_reader(fs::File::open(&canonical)?)?;
+    let document = crate::parse_path(path)?;
     let index = Arc::new(SearchIndex::from_document(&document));
     store_in_cache(canonical, len, modified, Arc::clone(&index));
     Ok(index)
