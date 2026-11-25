@@ -6,7 +6,7 @@ use super::styles::Styles;
 use super::text::Text;
 use super::transform::{self, Transform};
 use super::{flag, relation_id, Budget};
-use crate::model::{Document, Element, ElementType, GradientFill, ImageCrop, Page, Paragraph};
+use crate::model::{Document, Element, ElementType, GradientFill, ImageCrop, Page, Paragraph, Run};
 use crate::xml::Node;
 use crate::{Package, Result};
 
@@ -19,6 +19,8 @@ pub(super) struct Render<'a> {
     pub layout: Option<&'a Node>,
     pub master: Option<&'a Node>,
     pub background_gradient: Option<GradientFill>,
+    /// 包级 `ppt/tableStyles.xml`；`None` 表示该包没有表样式定义库。
+    pub table_styles: Option<&'a Part>,
 }
 
 #[derive(Clone, Copy)]
@@ -260,6 +262,24 @@ impl Render<'_> {
             chain,
         }
         .read(body)
+    }
+
+    /// 以调用方给定的 `initial` 基线读取段落，供 PPTX 表格注入 `tcTxStyle` 表头样式。
+    pub(super) fn paragraphs_with_base(
+        &mut self,
+        body: &Node,
+        chain: &[&Node],
+        initial: Run,
+    ) -> Result<Vec<Paragraph>> {
+        Text {
+            doc: self.doc,
+            theme: self.theme,
+            budget: self.budget,
+            defaults: self.defaults,
+            master: self.master,
+            chain,
+        }
+        .read_with_base(body, initial)
     }
 
     fn emit(&mut self, page: &mut Page, mut element: Element, transform: Transform) -> Result<()> {

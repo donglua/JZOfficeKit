@@ -13,6 +13,7 @@ pub(crate) mod render;
 mod round_rect;
 pub(crate) mod styles;
 mod table;
+mod table_style;
 pub(crate) mod text;
 mod text_fill;
 pub(crate) mod text_style;
@@ -83,6 +84,8 @@ pub(crate) fn parse(pkg: &mut Package, main_part: &str, scope: crate::Scope) -> 
     }
     let mut cache = Cache::default();
     let default_theme = cache.related(pkg, Some(&presentation), "theme")?;
+    // ppt/tableStyles.xml 为整份演示文稿共享的表样式定义库
+    let table_styles = cache.related(pkg, Some(&presentation), "tableStyles")?;
     let mut budget = Budget::default();
     // 首屏范围只渲染首张幻灯片：封面只需要第一页，其余页的渲染结果会被丢弃
     let limit = if scope == crate::Scope::FirstViewport {
@@ -128,6 +131,7 @@ pub(crate) fn parse(pkg: &mut Package, main_part: &str, scope: crate::Scope) -> 
             layout: layout_root,
             master: master_root,
             background_gradient: None,
+            table_styles: table_styles.as_deref(),
         };
         renderer.background(
             &mut page,
