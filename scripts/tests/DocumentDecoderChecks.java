@@ -21,6 +21,7 @@ public final class DocumentDecoderChecks {
         checkSearchMatchesDecodeAndValidation();
         checkTableCellValignsAndBorders();
         checkStrokeDashDecoding();
+        checkTableRowHeightsAndCellPaddings();
         System.out.println("PASS DocumentDecoderChecks (" + passed + " assertions)");
     }
 
@@ -186,6 +187,98 @@ public final class DocumentDecoderChecks {
             .pages.get(0).elements.get(0);
         check(boundary.strokeDash[0] == 10000f && boundary.strokeDash[1] == 0.5f,
             "dash segment protocol boundary accepted");
+    }
+
+    /**
+     * 表格行高下限 rowHeights 与单元格内边距 cellPaddings 的解码、维度校验与非法输入拒绝。
+     *
+     * 合法形态来自 core 侧 `Element.row_heights` / `Element.cell_paddings`：
+     * rowHeights 长度等于行数、值域 [0, 14400]；cellPaddings 为行数 × 列数矩阵、
+     * 每格固定 4 元且每边值域 [0, 1000]。
+     */
+    private static void checkTableRowHeightsAndCellPaddings() throws Exception {
+        String PARAGRAPH_A1 = paragraph("A1");
+        String PARAGRAPH_B1 = paragraph("B1");
+        String PARAGRAPH_A2 = paragraph("A2");
+        String PARAGRAPH_B2 = paragraph("B2");
+        String head = "{\"schemaVersion\":9,\"kind\":\"DOCX\",\"width\":595,\"warnings\":[],\"pages\":[],"
+            + "\"cellStyles\":[],\"sheets\":[],\"blocks\":[{"
+            + "\"type\":\"TABLE\",\"x\":0,\"y\":0,\"width\":200,\"height\":40,\"padding\":0,"
+            + "\"transform\":[1,0,0,1,0,0],\"fill\":0,\"stroke\":0,\"strokeWidth\":0,"
+            + "\"verticalAlignment\":\"TOP\",\"textWrap\":true,"
+            + "\"columnWidths\":[100,100],"
+            + "\"rows\":["
+            + "[[" + PARAGRAPH_A1 + "],[" + PARAGRAPH_B1 + "]],"
+            + "[[" + PARAGRAPH_A2 + "],[" + PARAGRAPH_B2 + "]]"
+            + "]";
+        String tail = "}]}";
+
+        // 1. 合法解码：行高与内边距矩阵
+        OfficeDocument.Element table = DocumentDecoder.decode(head
+            + ",\"rowHeights\":[36.0,48.0]"
+            + ",\"cellPaddings\":[[[2,4,2,4],[3.6,7.2,3.6,7.2]],[[0,0,0,0],[5,5,5,5]]]"
+            + tail).blocks.get(0);
+        check(table.rowHeights.size() == 2, "rowHeights decoded");
+        check(table.rowHeights.get(0) == 36f && table.rowHeights.get(1) == 48f, "rowHeights values decoded");
+        check(table.cellPaddings.size() == 2 && table.cellPaddings.get(0).size() == 2,
+            "cellPaddings dimensions decoded");
+        float[] firstPad = table.cellPaddings.get(0).get(0);
+        check(firstPad.length == 4 && firstPad[0] == 2f && firstPad[1] == 4f
+            && firstPad[2] == 2f && firstPad[3] == 4f, "cellPaddings values decoded");
+        float[] drawingPad = table.cellPaddings.get(0).get(1);
+        check(Math.abs(drawingPad[1] - 7.2f) < 1e-4f && Math.abs(drawingPad[0] - 3.6f) < 1e-4f,
+            "DrawingML default paddings decoded");
+
+        // 2. 缺省与 null 均为空，平台层沿用默认 20pt 行高与 [5,5,5,5] 内边距
+        OfficeDocument.Element omitted = DocumentDecoder.decode(head + tail).blocks.get(0);
+        check(omitted.rowHeights.isEmpty(), "omitted rowHeights is empty");
+        check(omitted.cellPaddings.isEmpty(), "omitted cellPaddings is empty");
+        OfficeDocument.Element nulled = DocumentDecoder.decode(
+            head + ",\"rowHeights\":null,\"cellPaddings\":null" + tail).blocks.get(0);
+        check(nulled.rowHeights.isEmpty(), "null rowHeights is empty");
+        check(nulled.cellPaddings.isEmpty(), "null cellPaddings is empty");
+
+        // 3. 值域边界：0 与 14400 / 1000 本身合法
+        OfficeDocument.Element boundary = DocumentDecoder.decode(head
+            + ",\"rowHeights\":[0,14400]"
+            + ",\"cellPaddings\":[[[0,1000,0,1000],[0,0,0,0]],[[1,1,1,1],[2,2,2,2]]]"
+            + tail).blocks.get(0);
+        check(boundary.rowHeights.get(1) == 14400f, "row height upper bound accepted");
+        check(boundary.cellPaddings.get(0).get(0)[1] == 1000f, "cell padding upper bound accepted");
+
+        // 4. rowHeights 长度与行数不一致
+        reject(head + ",\"rowHeights\":[36.0]" + tail, "Invalid core display model",
+            "row height count mismatch");
+        reject(head + ",\"rowHeights\":[36.0,48.0,60.0]" + tail, "Invalid core display model",
+            "row height count excess");
+
+        // 5. rowHeights 负值与超界
+        reject(head + ",\"rowHeights\":[-1,48.0]" + tail, "Invalid core display model",
+            "negative row height");
+        reject(head + ",\"rowHeights\":[36.0,14401]" + tail, "Invalid core display model",
+            "row height above limit");
+        reject(head + ",\"rowHeights\":[36.0,1e999]" + tail, "Invalid core display model",
+            "infinite row height");
+
+        // 6. cellPaddings 行列维度不匹配
+        reject(head + ",\"cellPaddings\":[[[0,0,0,0],[0,0,0,0]]]" + tail,
+            "Invalid core display model", "padding row count mismatch");
+        reject(head + ",\"cellPaddings\":[[[0,0,0,0]],[[0,0,0,0],[0,0,0,0]]]" + tail,
+            "Invalid core display model", "padding column count mismatch");
+
+        // 7. cellPaddings 数组长度不为 4
+        reject(head + ",\"cellPaddings\":[[[0,0,0],[0,0,0,0]],[[0,0,0,0],[0,0,0,0]]]" + tail,
+            "Invalid core display model", "padding edges shorter than four");
+        reject(head + ",\"cellPaddings\":[[[0,0,0,0,0],[0,0,0,0]],[[0,0,0,0],[0,0,0,0]]]" + tail,
+            "Invalid core display model", "padding edges longer than four");
+
+        // 8. cellPaddings 单边负值、超界与非有限值
+        reject(head + ",\"cellPaddings\":[[[-1,0,0,0],[0,0,0,0]],[[0,0,0,0],[0,0,0,0]]]" + tail,
+            "Invalid core display model", "negative cell padding");
+        reject(head + ",\"cellPaddings\":[[[0,1001,0,0],[0,0,0,0]],[[0,0,0,0],[0,0,0,0]]]" + tail,
+            "Invalid core display model", "cell padding above limit");
+        reject(head + ",\"cellPaddings\":[[[0,0,1e999,0],[0,0,0,0]],[[0,0,0,0],[0,0,0,0]]]" + tail,
+            "Invalid core display model", "infinite cell padding");
     }
 
     private static void checkSearchMatchesDecodeAndValidation() throws Exception {

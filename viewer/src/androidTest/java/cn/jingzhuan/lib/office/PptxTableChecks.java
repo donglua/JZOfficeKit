@@ -38,6 +38,8 @@ final class PptxTableChecks {
             mergedCellFillsFollowAnchors();
             threeLineTableHidesInnerVerticalEdges();
             bottomValignCellOffsetsText();
+            rowHeightsAndCustomPaddingsAdjustCellGeometry();
+            verticalMergeFillsOnlyMissingHeightOnLastRow();
         });
         return "PASS PPTX table cell fills, transparent body cells and DOCX empty cellFills compatibility\n"
             + "PASS DOCX merged table highlight skips covered cells\n"
@@ -45,6 +47,8 @@ final class PptxTableChecks {
             + "PASS DOCX merged table cell fills follow anchor coordinates\n"
             + "PASS DOCX three line table hides inner vertical borders\n"
             + "PASS DOCX bottom valign cell offsets table text\n"
+            + "PASS PPTX table rowHeights and cellPaddings adjust cell geometry\n"
+            + "PASS PPTX vertical merge fills only the missing height on last row\n"
             + "PASS XLSX search and highlight retains cache file\n"
             + "SCREENSHOTS pptx-table-synthetic.png\n";
     }
@@ -213,6 +217,84 @@ final class PptxTableChecks {
         return renderer.pages.get(0).elements.get(0);
     }
 
+    /**
+     * 行高下限与自定义内边距：rowHeights 保证短文本行仍维持显式高度，
+     * 非对称 cellPaddings 同时影响文字水平起点、可用宽度与垂直对齐基准。
+     *
+     * 布局：1 行 1 列，rowHeights = [44]，cellPaddings = [[[0, 12, 8, 16]]]，
+     * 即 [top, right, bottom, left] = [0, 12, 8, 16]。
+     */
+    private static void rowHeightsAndCustomPaddingsAdjustCellGeometry() {
+        OfficeDocument.Element table = table(0, 0, 300, 90, null);
+        table.rows.clear();
+        table.columnWidths.clear();
+        table.columnWidths.add(300f);
+        table.rows.add(rowOfCells(makeParagraph("Pad")));
+        table.rowHeights.add(44f);
+        List<float[]> padRow = new ArrayList<>();
+        padRow.add(new float[] {0f, 12f, 8f, 16f});
+        table.cellPaddings.add(padRow);
+
+        OfficeRenderer renderer = new OfficeRenderer();
+        renderer.layout(pptxDocument(300, 120, table));
+        OfficeRenderer.Element rendered = renderer.pages.get(0).elements.get(0);
+
+        // 短文本行高必须不低于显式声明的 44pt
+        check(rendered.cells.size() == 1, "rowHeights table registers one cell");
+        RectF cell = rendered.cells.get(0);
+        check(cell.height() >= 44f, "Explicit rowHeights keeps at least 44pt for short text");
+
+        // 文字水平起点 = 单元格左边 + padLeft(16)
+        check(!rendered.texts.isEmpty(), "rowHeights table lays out cell text");
+        OfficeTextLayout.Block block = rendered.texts.get(0);
+        near(block.x, cell.left + 16f, 0.5f, "Custom padding shifts text origin to x1 + padLeft");
+
+        // 垂直对齐：padTop = 0，剩余空间充足时居中偏移 = 0 + (remaining - 0 - 8) / 2
+        float remaining = cell.height() - block.layout.getHeight();
+        if (remaining > 8f) {
+            near(block.y, cell.top + (remaining - 8f) / 2f, 1f,
+                "Custom padTop and padBottom drive vertical centering");
+        } else {
+            near(block.y, cell.top, 1f, "Insufficient space falls back to padTop");
+        }
+    }
+
+    /**
+     * 纵向合并：当合并跨越的既有行高已足够容纳内容时，不允许再拉高首行；
+     * 仅当总高不足时把差额补到末行，保持各行原始比例。
+     *
+     * 布局：2 行 1 列，(0,0) 纵向合并 2 行，rowHeights = [50, 50]，内容为单行短文本。
+     */
+    private static void verticalMergeFillsOnlyMissingHeightOnLastRow() {
+        OfficeDocument.Element table = table(0, 0, 200, 100, null);
+        table.rows.clear();
+        table.columnWidths.clear();
+        table.columnWidths.add(200f);
+        table.rows.add(rowOfCells(makeParagraph("Merged")));
+        table.rows.add(rowOfCells(makeParagraph("covered")));
+        table.rowHeights.add(50f);
+        table.rowHeights.add(50f);
+        SpreadsheetDocument.CellRange merge = new SpreadsheetDocument.CellRange();
+        merge.startRow = 0;
+        merge.startColumn = 0;
+        merge.endRow = 1;
+        merge.endColumn = 0;
+        table.merges.add(merge);
+
+        OfficeRenderer renderer = new OfficeRenderer();
+        renderer.layout(pptxDocument(200, 140, table));
+        OfficeRenderer.Element rendered = renderer.pages.get(0).elements.get(0);
+
+        // 合并区域只登记锚点一个可见单元格，高度应为两行之和 100，且首行保持 50
+        check(rendered.cells.size() == 1, "vertical merge registers only the anchor cell");
+        RectF cell = rendered.cells.get(0);
+        near(cell.height(), 100f, 0.5f,
+            "Vertical merge keeps both explicit row heights when total already suffices");
+        check(!rendered.texts.isEmpty(), "vertical merge lays out anchor text");
+        check(rendered.texts.get(0).y < cell.top + 50f,
+            "Vertical merge does not inflate the first row height");
+    }
+
     private static OfficeDocument pptxDocument(int width, int height, OfficeDocument.Element element) {
         OfficeDocument document = new OfficeDocument();
         document.kind = OfficeDocument.Kind.PPTX;
@@ -250,9 +332,14 @@ final class PptxTableChecks {
         return false;
     }
 
+    /** 把若干单元格装成一行；只读取传入数组并复制元素，不存在堆污染风险 */
+    /** 把若干单元格装成一行；逐项加入避免把可变参数数组直接交给泛型方法 */
+    @SafeVarargs
     private static List<List<OfficeDocument.Paragraph>> rowOfCells(List<OfficeDocument.Paragraph>... cells) {
         List<List<OfficeDocument.Paragraph>> row = new ArrayList<>();
-        Collections.addAll(row, cells);
+        for (List<OfficeDocument.Paragraph> cell : cells) {
+            row.add(cell);
+        }
         return row;
     }
 

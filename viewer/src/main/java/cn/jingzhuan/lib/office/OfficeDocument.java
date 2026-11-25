@@ -63,6 +63,10 @@ final class OfficeDocument {
          * 为 {@code null} 表示实线（core 侧实线元素不输出该字段）。
          */
         float[] strokeDash;
+        /** 表格每行最小高度（pt）；为空表示沿用默认 20pt */
+        final List<Float> rowHeights = new ArrayList<>();
+        /** 单元格内边距矩阵，每项为 [top, right, bottom, left]；为空表示全表默认 [5, 5, 5, 5] */
+        final List<List<float[]>> cellPaddings = new ArrayList<>();
         final List<SpreadsheetDocument.CellRange> merges = new ArrayList<>();
         final List<Path> paths = new ArrayList<>();
         GradientFill fillGradient;

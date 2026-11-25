@@ -370,6 +370,27 @@ final class DocumentDecoder {
      * 解码单个单元格的四边边框数组，必须恰好包含 [top, right, bottom, left] 四条边。
      * 每条边为 {@code {"color": <argb>, "width": <pt>}}，线宽限制在 [0, 1000] 且必须有限。
      */
+    /**
+     * 解析单元格内边距数组，顺序为 [top, right, bottom, left]。
+     * 每边必须为有限非负数且不超过 1000pt，否则拒绝，避免平台层拿到可导致越界的几何值。
+     */
+    private static float[] cellPaddingEdges(Cursor c) {
+        float[] edges = new float[4];
+        int count = 0;
+        c.beginArray();
+        while (c.hasNext()) {
+            if (count >= 4) throw new IllegalArgumentException("Invalid table cell padding edges");
+            double value = c.nextDouble();
+            if (!Double.isFinite(value) || value < 0 || value > 1000) {
+                throw new IllegalArgumentException("Invalid table cell padding value");
+            }
+            edges[count++] = (float) value;
+        }
+        c.endArray();
+        if (count != 4) throw new IllegalArgumentException("Invalid table cell padding edges");
+        return edges;
+    }
+
     private static OfficeDocument.CellBorder[] cellBorderEdges(Cursor c) {
         OfficeDocument.CellBorder[] edges = new OfficeDocument.CellBorder[4];
         int count = 0;
@@ -812,6 +833,36 @@ final class DocumentDecoder {
                         c.endArray();
                     }
                     break;
+                case "rowHeights":
+                    if (c.peekNull()) {
+                        c.nextNull();
+                    } else {
+                        c.beginArray();
+                        while (c.hasNext()) {
+                            double value = c.nextDouble();
+                            if (!Double.isFinite(value) || value < 0 || value > 14400) {
+                                throw new IllegalArgumentException("Invalid table row height");
+                            }
+                            e.rowHeights.add((float) value);
+                        }
+                        c.endArray();
+                    }
+                    break;
+                case "cellPaddings":
+                    if (c.peekNull()) {
+                        c.nextNull();
+                    } else {
+                        c.beginArray();
+                        while (c.hasNext()) {
+                            List<float[]> row = new ArrayList<>();
+                            c.beginArray();
+                            while (c.hasNext()) row.add(cellPaddingEdges(c));
+                            c.endArray();
+                            e.cellPaddings.add(row);
+                        }
+                        c.endArray();
+                    }
+                    break;
                 case "merges":
                     if (c.peekNull()) {
                         c.nextNull();
@@ -850,6 +901,19 @@ final class DocumentDecoder {
             for (int i = 0; i < e.cellBorders.size(); i++) {
                 if (e.cellBorders.get(i).size() != e.rows.get(i).size()) {
                     throw new IllegalArgumentException("Invalid table border columns");
+                }
+            }
+        }
+        if (!e.rowHeights.isEmpty() && e.rowHeights.size() != e.rows.size()) {
+            throw new IllegalArgumentException("Invalid table row height count");
+        }
+        if (!e.cellPaddings.isEmpty()) {
+            if (e.cellPaddings.size() != e.rows.size()) {
+                throw new IllegalArgumentException("Invalid table padding rows");
+            }
+            for (int i = 0; i < e.cellPaddings.size(); i++) {
+                if (e.cellPaddings.get(i).size() != e.rows.get(i).size()) {
+                    throw new IllegalArgumentException("Invalid table padding columns");
                 }
             }
         }

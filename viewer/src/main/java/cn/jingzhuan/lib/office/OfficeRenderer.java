@@ -216,41 +216,51 @@ final class OfficeRenderer {
                 colX[c + 1] = colX[c] + w;
             }
             int numRows = source.rows.size();
-            float[] rowTops = new float[numRows + 1];
-            float y = 0;
+            // 两阶段行高结算：先按 rowHeights 下限与单行内容撑高，再对纵向合并补差额
+            float[] rowHeights = new float[numRows];
             for (int r = 0; r < numRows; r++) {
-                rowTops[r] = y;
-                float rowHeight = 20;
+                float explicitMin = r < source.rowHeights.size() ? source.rowHeights.get(r) : 0f;
+                rowHeights[r] = Math.max(20f, explicitMin);
                 List<List<OfficeDocument.Paragraph>> row = source.rows.get(r);
                 for (int c = 0; c < cols; c++) {
                     SpreadsheetDocument.CellRange m = findMerge(source.merges, r, c);
                     if (m != null && (m.startRow != r || m.startColumn != c)) continue;
+                    // 纵向合并单元格统一在第二阶段按跨度差额补齐，避免把高度全部压在首行
+                    if (m != null && m.endRow > m.startRow) continue;
                     float x1 = colX[c];
-                    float x2 = m != null ? colX[Math.min(cols, (int) m.endColumn + 1)] : colX[c + 1];
-                    float cellW = Math.max(1, x2 - x1);
+                    float x2 = m != null ? colX[Math.min(cols, m.endColumn + 1)] : colX[c + 1];
+                    float cellW = Math.max(1f, x2 - x1);
+                    float[] pad = cellPaddingAt(source, r, c);
+                    float availW = Math.max(1f, cellW - pad[3] - pad[1]);
                     List<OfficeDocument.Paragraph> cell = c < row.size() ? row.get(c) : Collections.emptyList();
                     if (!cell.isEmpty()) {
-                        float availW = Math.max(1, cellW - 10);
-                        float cellContentH = 0;
-                        for (OfficeDocument.Paragraph para : cell) {
-                            if (para.image != null && para.imageWidth != null && para.imageHeight != null
-                                    && para.imageWidth > 0 && para.imageHeight > 0) {
-                                float fitW = Math.min(availW, para.imageWidth);
-                                float fitH = para.imageHeight * (fitW / para.imageWidth);
-                                cellContentH += fitH + Math.max(0, para.before) + Math.max(0, para.after);
-                            }
-                        }
-                        List<OfficeDocument.Paragraph> textParas = new ArrayList<>();
-                        for (OfficeDocument.Paragraph p : cell) {
-                            if (p.image == null) textParas.add(p);
-                        }
-                        if (!textParas.isEmpty()) {
-                            cellContentH += OfficeTextLayout.measure(textParas, availW, !flow);
-                        }
-                        rowHeight = Math.max(rowHeight, cellContentH + 10);
+                        float contentH = measureCellContentHeight(cell, availW, !flow);
+                        rowHeights[r] = Math.max(rowHeights[r], contentH + pad[0] + pad[2]);
                     }
                 }
-                y += rowHeight;
+            }
+            // 纵向合并单元格仅在跨行总高不足时把差额补到末行，保留各行原始比例
+            for (SpreadsheetDocument.CellRange m : source.merges) {
+                if (m.endRow <= m.startRow || m.startRow < 0 || m.endRow >= numRows
+                        || m.startColumn < 0 || m.startColumn >= cols) continue;
+                float x1 = colX[m.startColumn];
+                float x2 = colX[Math.min(cols, m.endColumn + 1)];
+                float cellW = Math.max(1f, x2 - x1);
+                float[] pad = cellPaddingAt(source, m.startRow, m.startColumn);
+                float availW = Math.max(1f, cellW - pad[3] - pad[1]);
+                List<List<OfficeDocument.Paragraph>> row = source.rows.get(m.startRow);
+                List<OfficeDocument.Paragraph> cell = m.startColumn < row.size() ? row.get(m.startColumn) : Collections.emptyList();
+                if (cell.isEmpty()) continue;
+                float neededH = measureCellContentHeight(cell, availW, !flow) + pad[0] + pad[2];
+                float spanH = 0f;
+                for (int rr = m.startRow; rr <= m.endRow; rr++) spanH += rowHeights[rr];
+                if (neededH > spanH) rowHeights[m.endRow] += neededH - spanH;
+            }
+            float[] rowTops = new float[numRows + 1];
+            float y = 0;
+            for (int r = 0; r < numRows; r++) {
+                rowTops[r] = y;
+                y += rowHeights[r];
             }
             rowTops[numRows] = y;
             for (int r = 0; r < numRows; r++) {
@@ -261,9 +271,9 @@ final class OfficeRenderer {
                     if (m != null) {
                         if (m.startRow != r || m.startColumn != c) continue;
                         x1 = colX[c];
-                        x2 = colX[Math.min(cols, (int) m.endColumn + 1)];
+                        x2 = colX[Math.min(cols, m.endColumn + 1)];
                         y1 = rowTops[r];
-                        y2 = rowTops[Math.min(numRows, (int) m.endRow + 1)];
+                        y2 = rowTops[Math.min(numRows, m.endRow + 1)];
                         d.cells.add(new RectF(x1, y1, x2, y2));
                     } else {
                         x1 = colX[c];
@@ -278,23 +288,9 @@ final class OfficeRenderer {
                     float cellH = Math.max(1, y2 - y1);
                     List<OfficeDocument.Paragraph> cell = c < row.size() ? row.get(c) : Collections.emptyList();
                     if (!cell.isEmpty()) {
-                        float availW = Math.max(1, cellW - 10);
-                        float cellContentH = 0;
-                        for (OfficeDocument.Paragraph para : cell) {
-                            if (para.image != null && para.imageWidth != null && para.imageHeight != null
-                                    && para.imageWidth > 0 && para.imageHeight > 0) {
-                                float fitW = Math.min(availW, para.imageWidth);
-                                float fitH = para.imageHeight * (fitW / para.imageWidth);
-                                cellContentH += fitH + Math.max(0, para.before) + Math.max(0, para.after);
-                            }
-                        }
-                        List<OfficeDocument.Paragraph> textParas = new ArrayList<>();
-                        for (OfficeDocument.Paragraph p : cell) {
-                            if (p.image == null) textParas.add(p);
-                        }
-                        if (!textParas.isEmpty()) {
-                            cellContentH += OfficeTextLayout.measure(textParas, availW, !flow);
-                        }
+                        float[] pad = cellPaddingAt(source, r, c);
+                        float availW = Math.max(1, cellW - pad[3] - pad[1]);
+                        float cellContentH = measureCellContentHeight(cell, availW, !flow);
                         float vOffset = cellVerticalOffset(source, r, c, cellH, cellContentH);
                         float curY = y1 + vOffset;
                         int startTextIdx = d.texts.size();
@@ -304,7 +300,7 @@ final class OfficeRenderer {
                                 curY += Math.max(0, para.before);
                                 float fitW = Math.min(availW, para.imageWidth);
                                 float fitH = para.imageHeight * (fitW / para.imageWidth);
-                                float imgX = x1 + 5;
+                                float imgX = x1 + pad[3];
                                 if (para.alignment == 1) {
                                     imgX += Math.max(0, (availW - fitW) / 2.0f);
                                 } else if (para.alignment == 2) {
@@ -316,7 +312,7 @@ final class OfficeRenderer {
                                 d.cellImages.add(ci);
                                 curY += fitH + Math.max(0, para.after);
                             } else {
-                                curY = OfficeTextLayout.append(Collections.singletonList(para), x1 + 5, curY, availW, d.texts, !flow);
+                                curY = OfficeTextLayout.append(Collections.singletonList(para), x1 + pad[3], curY, availW, d.texts, !flow);
                             }
                         }
                         // 只登记产生了排版块的非空单元格，保证聚合时的块顺序与 texts 一致
@@ -699,13 +695,60 @@ final class OfficeRenderer {
     }
 
     /**
+     * 取单元格四边内边距，顺序为 [top, right, bottom, left]（单位 pt）。
+     *
+     * 缺省、坐标越界或数据非法（长度不为 4、含非有限值、含负值）时统一回退平台默认
+     * {5, 5, 5, 5}，与 DOCX 表格的既有内边距行为保持一致。
+     */
+    static float[] cellPaddingAt(OfficeDocument.Element element, int r, int c) {
+        float[] fallback = {5f, 5f, 5f, 5f};
+        if (element.cellPaddings == null || r < 0 || r >= element.cellPaddings.size()) return fallback;
+        List<float[]> row = element.cellPaddings.get(r);
+        if (row == null || c < 0 || c >= row.size()) return fallback;
+        float[] pad = row.get(c);
+        if (pad == null || pad.length != 4) return fallback;
+        for (float value : pad) {
+            if (Float.isNaN(value) || Float.isInfinite(value) || value < 0) return fallback;
+        }
+        return pad;
+    }
+
+    /**
+     * 测量单元格内容总高度（pt），统一行高结算与绘制循环的度量口径。
+     *
+     * 内嵌图片按可用宽度等比缩放后累加，文本段落则交给 {@link OfficeTextLayout#measure}；
+     * 两处都叠加段落 {@code before} / {@code after} 间距，与绘制时的累加顺序完全一致。
+     */
+    static float measureCellContentHeight(List<OfficeDocument.Paragraph> cell, float availW, boolean wrap) {
+        float imageH = 0;
+        for (OfficeDocument.Paragraph para : cell) {
+            if (para.image != null && para.imageWidth != null && para.imageHeight != null
+                    && para.imageWidth > 0 && para.imageHeight > 0) {
+                float fitW = Math.min(availW, para.imageWidth);
+                float fitH = para.imageHeight * (fitW / para.imageWidth);
+                imageH += fitH + Math.max(0, para.before) + Math.max(0, para.after);
+            }
+        }
+        List<OfficeDocument.Paragraph> textParas = new ArrayList<>();
+        for (OfficeDocument.Paragraph p : cell) {
+            if (p.image == null) textParas.add(p);
+        }
+        float textH = textParas.isEmpty() ? 0 : OfficeTextLayout.measure(textParas, availW, wrap);
+        return imageH + textH;
+    }
+
+    /**
      * 按单元格垂直对齐计算文字起排偏移，缺省（无 cellValigns 或坐标越界）按 1 垂直居中。
      *
+     * 设 {@code remaining = cellH - cellContentH}，{@code padTop} / {@code padBottom} 取自
+     * {@link #cellPaddingAt}：
      * <ul>
-     *   <li>0 顶部：恒为 5；</li>
-     *   <li>1 垂直居中：剩余空间充足时居中，否则回退 5；</li>
-     *   <li>2 底部：剩余空间充足时贴近底部并预留 5 的内边距，否则回退 5。</li>
+     *   <li>0 顶部：恒为 {@code padTop}；</li>
+     *   <li>1 垂直居中：剩余空间充足时 {@code padTop + (remaining - padTop - padBottom) / 2}，否则回退 {@code padTop}；</li>
+     *   <li>2 底部：剩余空间充足时 {@code remaining - padBottom}，否则回退 {@code padTop}。</li>
      * </ul>
+     * 当 {@code padTop == padBottom == 5} 时居中公式退化为 {@code (cellH - cellContentH) / 2}，
+     * 与原公式数学等价。
      * 查询坐标必须是合并区域的锚点 (r, c)，与文字实际存放的单元格一致。
      */
     static float cellVerticalOffset(OfficeDocument.Element element, int r, int c,
@@ -718,10 +761,14 @@ final class OfficeRenderer {
                 if (value != null) valign = value;
             }
         }
-        // 剩余空间不足时任何对齐方式都退回 5 的基准内边距，避免文字被贴边裁切
-        if (!(cellH > cellContentH + 10) || valign == 0) return 5;
-        if (valign == 2) return Math.max(5, cellH - cellContentH - 5);
-        return Math.max(5, (cellH - cellContentH) / 2.0f);
+        float[] pad = cellPaddingAt(element, r, c);
+        float padTop = pad[0];
+        float padBottom = pad[2];
+        // 剩余空间不足时任何对齐方式都退回 padTop 基准，避免文字被贴边裁切
+        float remaining = cellH - cellContentH;
+        if (remaining <= padTop + padBottom || valign == 0) return padTop;
+        if (valign == 2) return Math.max(padTop, remaining - padBottom);
+        return Math.max(padTop, padTop + (remaining - padTop - padBottom) / 2.0f);
     }
 
     /** 取单元格四边边框；无 cellBorders 或坐标越界时返回 null，由调用方回退统一网格框 */
