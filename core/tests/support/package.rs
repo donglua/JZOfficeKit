@@ -57,6 +57,15 @@ pub fn content_types(overrides: &[(&str, &str)]) -> String {
     text
 }
 
+/// 写入或覆盖一个部件：已存在则替换内容，否则追加。用于给测试包注入额外部件。
+#[cfg(test)]
+pub fn upsert(parts: &mut Parts, name: &'static str, bytes: Vec<u8>) {
+    match parts.iter_mut().find(|(path, _)| *path == name) {
+        Some((_, existing)) => *existing = bytes,
+        None => parts.push((name, bytes)),
+    }
+}
+
 #[cfg(test)]
 pub fn replace(parts: &mut Parts, name: &str, text: &str) {
     let part = parts.iter_mut().find(|(path, _)| *path == name);
