@@ -340,6 +340,13 @@ pub struct Element {
     /// 为空表示全表为均匀网格框，由 `stroke` / `stroke_width` 承担统一绘制。
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub cell_borders: Vec<Vec<[CellBorder; 4]>>,
+    /// 表格各行最小高度（单位 point），长度与 `rows` 一致；为空表示沿用平台默认 20pt。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub row_heights: Vec<f32>,
+    /// 单元格四边内边距矩阵，每项为 `[top, right, bottom, left]`（单位 point）。
+    /// 为空表示全表沿用平台默认 `[5.0, 5.0, 5.0, 5.0]`。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cell_paddings: Vec<Vec<[f32; 4]>>,
     /// 虚线描边点线序列，单位为 point，按“实线长度、间隔长度”成对循环；为空表示实线。
     /// 由 `a:prstDash` 在 `core` 层换算，平台层直接用于 `DashPathEffect` / `setLineDash`。
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -392,6 +399,8 @@ impl Default for Element {
             cell_fills: Vec::new(),
             cell_valigns: Vec::new(),
             cell_borders: Vec::new(),
+            row_heights: Vec::new(),
+            cell_paddings: Vec::new(),
             stroke_dash: Vec::new(),
             paths: Vec::new(),
             fill_gradient: None,

@@ -18,13 +18,27 @@ pub(super) struct Text<'a> {
 
 impl Text<'_> {
     pub fn read(&mut self, body: &Node) -> Result<Vec<Paragraph>> {
+        let initial = Run {
+            size: 18.0,
+            color: self.theme.text_color(),
+            ..Run::default()
+        };
+        self.read_with_base(body, initial)
+    }
+
+    /// 以调用方给定的 `initial_run` 作为段落级基线读取正文。
+    ///
+    /// 供 PPTX 表格注入 `tcTxStyle` 的表头粗斜体、字色与主题字体：单元格内的
+    /// `lstStyle`、`pPr/defRPr`、`rPr` 与 `endParaRPr` 仍按既有优先级覆盖该基线，
+    /// 因此单元格直设文本样式始终高于表样式。
+    pub fn read_with_base(&mut self, body: &Node, initial: Run) -> Result<Vec<Paragraph>> {
         read_paragraphs_inner(
             body,
             self.chain,
             self.defaults,
             self.master,
             self.theme,
-            18.0,
+            initial,
             self.doc,
             &mut |bytes| self.budget.text(bytes),
         )
@@ -49,7 +63,11 @@ pub(crate) fn read_drawing_paragraphs(
         None,
         None,
         theme,
-        default_font_size,
+        Run {
+            size: default_font_size,
+            color: theme.text_color(),
+            ..Run::default()
+        },
         doc,
         add_text_bytes,
     )
@@ -62,7 +80,7 @@ fn read_paragraphs_inner(
     defaults_source: Option<&Node>,
     master: Option<&Node>,
     theme: &Theme,
-    default_font_size: f32,
+    initial_run: Run,
     doc: &mut Document,
     add_text_bytes: &mut impl FnMut(usize) -> Result<()>,
 ) -> Result<Vec<Paragraph>> {
@@ -103,11 +121,7 @@ fn read_paragraphs_inner(
         if let Some(direct) = direct {
             defaults.push(direct);
         }
-        let mut base = Run {
-            size: default_font_size,
-            color: theme.text_color(),
-            ..Run::default()
-        };
+        let mut base = initial_run.clone();
         let mut result = Paragraph {
             after: 0.0,
             ..Paragraph::default()

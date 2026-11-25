@@ -170,6 +170,44 @@ impl Theme {
             .child(name)
     }
 
+    /// 从主题 `fontScheme` 解析 `major` / `minor` 字体族名，优先按脚本区分中西文。
+    ///
+    /// `key` 为 `"major"` 或 `"minor"`（对应 `<a:majorFont>` / `<a:minorFont>`）。
+    /// `east_asian` 为真时优先取 `<a:ea typeface="...">`，其次取 `script="Hans"` 的
+    /// `<a:font>`，最后回退到 `<a:latin>`；为假时直接取 `<a:latin>`。
+    /// 主题缺失、分组缺失或对应 `typeface` 为空串时返回 `None`，由调用方沿用平台默认字体。
+    pub(crate) fn font_face(&self, key: &str, east_asian: bool) -> Option<&str> {
+        let group_name = match key {
+            "major" => "majorFont",
+            "minor" => "minorFont",
+            _ => return None,
+        };
+        let group = self
+            .source
+            .as_ref()?
+            .root()
+            .child("themeElements")?
+            .child("fontScheme")?
+            .child(group_name)?;
+        let latin = group
+            .child("latin")
+            .map(|n| n.attr("typeface"))
+            .filter(|s| !s.is_empty());
+        if east_asian {
+            let ea = group
+                .child("ea")
+                .map(|n| n.attr("typeface"))
+                .filter(|s| !s.is_empty());
+            let hans = group
+                .named("font")
+                .find(|n| n.attr("script") == "Hans")
+                .map(|n| n.attr("typeface"))
+                .filter(|s| !s.is_empty());
+            return ea.or(hans).or(latin);
+        }
+        latin
+    }
+
     pub fn fill_reference(&self, reference: &Node, fallback: u32, doc: &mut Document) -> u32 {
         let index = reference.attr("idx").parse::<usize>().unwrap_or(0);
         let (list, offset) = match index {
@@ -182,6 +220,19 @@ impl Theme {
             match style.name.as_str() {
                 "solidFill" => return self.color(style, placeholder, doc),
                 "noFill" => return 0,
+                // 表格与主题 fillRef 常引用渐变填充；取首个色标做纯色兜底，避免整行表头变白
+                "gradFill" => {
+                    if let Some(stop) = style.child("gsLst").and_then(|gs| gs.named("gs").next()) {
+                        doc.warn("Some PPTX theme fill styles use solid fallback colors.");
+                        return self.color(stop, placeholder, doc);
+                    }
+                    if placeholder != 0 {
+                        doc.warn("Some PPTX theme fill styles use solid fallback colors.");
+                        return placeholder;
+                    }
+                    doc.warn("Some PPTX theme fill styles are not supported.");
+                    return fallback;
+                }
                 _ => (),
             }
         }
@@ -261,5 +312,78 @@ fn apply_luminance(channels: &mut [f64; 3], lightness: Option<f64>) {
         *channel = (((*channel / 255.0 - min) / (max - min)) * chroma + lightness - chroma / 2.0)
             .clamp(0.0, 1.0)
             * 255.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Theme;
+    use crate::model::{Document, Kind};
+    use crate::xml;
+
+    #[test]
+    fn font_face_and_gradient_fill_reference_resolve_from_theme() -> crate::Result<()> {
+        let theme_xml = xml::parse(
+            br#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                <a:themeElements>
+                    <a:clrScheme name="C">
+                        <a:dk1><a:srgbClr val="101010"/></a:dk1>
+                        <a:lt1><a:srgbClr val="FFFFFF"/></a:lt1>
+                        <a:accent1><a:srgbClr val="2A9D8F"/></a:accent1>
+                    </a:clrScheme>
+                    <a:fontScheme name="F">
+                        <a:majorFont><a:latin typeface="Calibri Light"/><a:ea typeface=""/><a:font script="Hans" typeface="SimHei"/></a:majorFont>
+                        <a:minorFont><a:latin typeface="Calibri"/><a:ea typeface="DengXian"/></a:minorFont>
+                    </a:fontScheme>
+                    <a:fmtScheme name="Fmt">
+                        <a:fillStyleLst>
+                            <a:solidFill><a:schemeClr val="phClr"/></a:solidFill>
+                            <a:gradFill><a:gsLst><a:gs pos="0"><a:schemeClr val="phClr"><a:tint val="50000"/></a:schemeClr></a:gs></a:gsLst></a:gradFill>
+                        </a:fillStyleLst>
+                    </a:fmtScheme>
+                </a:themeElements>
+            </a:theme>"#.to_vec(),
+        )?;
+        let mut doc = Document::new(Kind::PPTX);
+        let theme = Theme::from_node(Some(&theme_xml), &mut doc);
+        assert_eq!(theme.font_face("major", false), Some("Calibri Light"));
+        assert_eq!(theme.font_face("major", true), Some("SimHei"));
+        assert_eq!(theme.font_face("minor", true), Some("DengXian"));
+
+        let fill_ref = xml::parse(
+            br#"<a:fillRef idx="2" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                <a:schemeClr val="accent1"/>
+            </a:fillRef>"#
+                .to_vec(),
+        )?;
+        let resolved = theme.fill_reference(&fill_ref, 0, &mut doc);
+        // 渐变兜底不能退化成透明（0），也不能等同于未经 tint 的 accent1
+        assert_ne!(resolved, 0);
+        assert_ne!(resolved, 0xff2a_9d8f);
+        Ok(())
+    }
+
+    /// 未知 fontScheme 分组与西文回退：`major` 的 `ea` 为空串时必须回退到 `latin`
+    #[test]
+    fn font_face_falls_back_to_latin_and_rejects_unknown_keys() -> crate::Result<()> {
+        let theme_xml = xml::parse(
+            br#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                <a:themeElements>
+                    <a:clrScheme name="C"><a:dk1><a:srgbClr val="000000"/></a:dk1></a:clrScheme>
+                    <a:fontScheme name="F">
+                        <a:majorFont><a:latin typeface="Calibri Light"/><a:ea typeface=""/></a:majorFont>
+                    </a:fontScheme>
+                </a:themeElements>
+            </a:theme>"#.to_vec(),
+        )?;
+        let mut doc = Document::new(Kind::PPTX);
+        let theme = Theme::from_node(Some(&theme_xml), &mut doc);
+        // major 的 ea 为空串，应回退 latin
+        assert_eq!(theme.font_face("major", true), Some("Calibri Light"));
+        // 未声明的 minorFont 返回 None
+        assert_eq!(theme.font_face("minor", false), None);
+        // 非 major/minor 的 key 直接拒绝
+        assert_eq!(theme.font_face("other", false), None);
+        Ok(())
     }
 }

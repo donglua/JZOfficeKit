@@ -81,6 +81,8 @@ fn output_schema_version_and_serialized_field_names_are_stable() -> TestResult {
         assert!(element.get("columnWidths").is_none());
         assert!(element.get("rows").is_none());
         assert!(element.get("cellFills").is_none());
+        assert!(element.get("rowHeights").is_none());
+        assert!(element.get("cellPaddings").is_none());
         assert!(element.get("paths").is_none());
         assert_eq!(element["verticalAlignment"], "TOP");
         assert!(element.get("imageCrop").is_none());
