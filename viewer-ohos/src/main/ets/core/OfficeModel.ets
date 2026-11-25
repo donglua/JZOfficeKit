@@ -111,6 +111,10 @@ export interface Element {
   paths?: Path[];
   fillGradient?: GradientFill;
   merges?: CellRange[];
+  /** 表格各行最小高度（pt）；缺省为空表示沿用默认 20pt */
+  rowHeights?: number[];
+  /** 单元格四边内边距矩阵，每项为 [top, right, bottom, left]；缺省为空表示全表默认 [5, 5, 5, 5] */
+  cellPaddings?: number[][][];
 }
 
 export interface Page {

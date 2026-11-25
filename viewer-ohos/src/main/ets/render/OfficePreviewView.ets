@@ -2967,7 +2967,9 @@ function cloneElementForCanvas(src: model.Element, width: number, height: number
     strokeDash: src.strokeDash,
     paths: src.paths,
     fillGradient: src.fillGradient,
-    merges: src.merges
+    merges: src.merges,
+    rowHeights: src.rowHeights,
+    cellPaddings: src.cellPaddings
   };
 }
 

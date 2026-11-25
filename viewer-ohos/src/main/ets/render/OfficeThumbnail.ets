@@ -310,7 +310,9 @@ function buildThumbnailElement(block: model.Element, width: number, height: numb
     strokeDash: block.strokeDash,
     paths: block.paths,
     fillGradient: block.fillGradient,
-    merges: block.merges
+    merges: block.merges,
+    rowHeights: block.rowHeights,
+    cellPaddings: block.cellPaddings
   };
 }
 

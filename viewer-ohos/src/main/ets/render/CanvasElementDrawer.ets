@@ -424,13 +424,51 @@ export class CanvasElementDrawer {
   }
 
   /**
+   * 取单元格四边内边距，顺序为 [top, right, bottom, left]（单位 pt）。
+   *
+   * 缺省、坐标越界或数据非法（长度不为 4、含非有限值、含负值）时统一回退平台默认
+   * [5, 5, 5, 5]，与 DOCX 表格的既有内边距行为保持一致。
+   */
+  public static cellPadding(
+    element: model.Element,
+    r: number,
+    c: number
+  ): [number, number, number, number] {
+    const fallback: [number, number, number, number] = [5, 5, 5, 5];
+    const paddings = element.cellPaddings;
+    if (paddings === undefined || paddings === null) {
+      return fallback;
+    }
+    if (r < 0 || r >= paddings.length) {
+      return fallback;
+    }
+    const row = paddings[r];
+    if (row === undefined || row === null || c < 0 || c >= row.length) {
+      return fallback;
+    }
+    const pad = row[c];
+    if (pad === undefined || pad === null || pad.length !== 4) {
+      return fallback;
+    }
+    for (let i = 0; i < 4; i++) {
+      const value = pad[i];
+      if (typeof value !== 'number' || !isFinite(value) || value < 0) {
+        return fallback;
+      }
+    }
+    return [pad[0], pad[1], pad[2], pad[3]];
+  }
+
+  /**
    * 解析单元格文字起排的垂直偏移。
    *
    * 三处调用方（drawTable、computeElementHighlightRects、buildElementTextBlocks）必须共用本方法，
    * 保证正文绘制、全文检索高亮与文本选区三套坐标完全一致：
-   * - 0（顶部对齐）恒为 5；
-   * - 1（垂直居中，缺省行为）剩余空间充足时居中，否则回退到 5；
-   * - 2（底部对齐）剩余空间充足时贴近底部并预留 5 的内边距，否则回退到 5。
+   * - 设 `remaining = cellH - cellContentH`；剩余空间不足（`remaining <= padTop + padBottom`）
+   *   或 `valign == 0`（顶部对齐）时返回 `padTop`；
+   * - 2（底部对齐）返回 `max(padTop, remaining - padBottom)`；
+   * - 1（垂直居中，缺省行为）返回 `max(padTop, padTop + (remaining - padTop - padBottom) / 2)`。
+   * 当 `padTop == padBottom == 5` 时居中公式退化为 `(cellH - cellContentH) / 2`，与旧公式等价。
    * 查询坐标必须传入合并区域的锚点 (r, c)，与文字实际存放的单元格保持一致。
    */
   public static resolveCellVerticalOffset(
@@ -450,15 +488,18 @@ export class CanvasElementDrawer {
       }
     }
 
-    // 剩余空间不足时任何对齐方式都退回 5 的基准内边距，避免文字被贴边裁切
+    const pad = CanvasElementDrawer.cellPadding(element, r, c);
+    const padTop = pad[0];
+    const padBottom = pad[2];
+    // 剩余空间不足时任何对齐方式都退回 padTop 基准，避免文字被贴边裁切
     const remaining = cellH - cellContentH;
-    if (remaining <= 10 || valign === 0) {
-      return 5;
+    if (remaining <= padTop + padBottom || valign === 0) {
+      return padTop;
     }
     if (valign === 2) {
-      return Math.max(5, remaining - 5);
+      return Math.max(padTop, remaining - padBottom);
     }
-    return Math.max(5, remaining / 2);
+    return Math.max(padTop, padTop + (remaining - padTop - padBottom) / 2);
   }
 
   /**
@@ -561,9 +602,10 @@ export class CanvasElementDrawer {
     const rowTops: number[] = new Array<number>(numRows + 1).fill(0);
     let currentY = 0;
 
+    // 第一阶段：按 rowHeights 下限初始化各行，再按非纵向跨越单元格的内容高度撑高
+    const rowHeights: number[] = new Array<number>(numRows).fill(20);
     for (let r = 0; r < numRows; r++) {
-      rowTops[r] = currentY;
-      let rowHeight = 20;
+      const explicitMin = CanvasElementDrawer.rowHeightAt(element, r);
       const row = rows[r];
 
       for (let c = 0; c < cols; c++) {
@@ -571,43 +613,56 @@ export class CanvasElementDrawer {
         if (m && (m.startRow !== r || m.startColumn !== c)) {
           continue;
         }
+        // 纵向合并单元格统一在第二阶段按跨度差额补齐，避免把高度全部压在首行
+        if (m && m.endRow > m.startRow) {
+          continue;
+        }
         const x1 = colX[c];
         const x2 = m ? colX[Math.min(cols, m.endColumn + 1)] : colX[c + 1];
         const cellW = Math.max(1, x2 - x1);
         const cellParas = c < row.length ? row[c] : [];
         if (cellParas && cellParas.length > 0) {
-          const availW = Math.max(1, cellW - 10);
-          let cellTextH = 0;
-          for (let pIdx = 0; pIdx < cellParas.length; pIdx++) {
-            const para = cellParas[pIdx];
-            cellTextH += Math.max(0, para.before || 0);
-            if (para.image && para.imageWidth && para.imageHeight && para.imageWidth > 0 && para.imageHeight > 0) {
-              const fitW = Math.min(availW, para.imageWidth);
-              const fitH = para.imageHeight * (fitW / para.imageWidth);
-              cellTextH += fitH;
-            } else if (ctx) {
-              const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availW, true);
-              for (let lIdx = 0; lIdx < lines.length; lIdx++) {
-                cellTextH += lines[lIdx].height;
-              }
-            } else {
-              let charCount = 0;
-              let maxFontSize = 12;
-              if (para.runs) {
-                for (let rIdx = 0; rIdx < para.runs.length; rIdx++) {
-                  charCount += (para.runs[rIdx].text || '').length;
-                  maxFontSize = Math.max(maxFontSize, para.runs[rIdx].size || 12);
-                }
-              }
-              const linesEstimate = Math.max(1, Math.ceil((charCount * maxFontSize * 0.6) / availW));
-              cellTextH += linesEstimate * CanvasElementDrawer.computeLineHeight(para, maxFontSize);
-            }
-            cellTextH += Math.max(0, para.after || 0);
-          }
-          rowHeight = Math.max(rowHeight, cellTextH + 10);
+          const pad = CanvasElementDrawer.cellPadding(element, r, c);
+          const availW = Math.max(1, cellW - pad[3] - pad[1]);
+          const cellTextH = CanvasElementDrawer.measureCellContentHeight(ctx, cellParas, availW);
+          rowHeights[r] = Math.max(rowHeights[r], explicitMin, cellTextH + pad[0] + pad[2]);
+        } else {
+          rowHeights[r] = Math.max(rowHeights[r], explicitMin);
         }
       }
-      currentY += rowHeight;
+    }
+
+    // 第二阶段：纵向合并单元格仅在跨行总高不足时把差额补到末行，保留各行原始比例
+    const merges = element.merges ?? [];
+    for (let mIdx = 0; mIdx < merges.length; mIdx++) {
+      const m = merges[mIdx];
+      if (m.endRow <= m.startRow || m.startRow < 0 || m.endRow >= numRows
+        || m.startColumn < 0 || m.startColumn >= cols) {
+        continue;
+      }
+      const row = rows[m.startRow];
+      const cellParas = m.startColumn < row.length ? row[m.startColumn] : [];
+      if (!cellParas || cellParas.length === 0) {
+        continue;
+      }
+      const x1 = colX[m.startColumn];
+      const x2 = colX[Math.min(cols, m.endColumn + 1)];
+      const cellW = Math.max(1, x2 - x1);
+      const pad = CanvasElementDrawer.cellPadding(element, m.startRow, m.startColumn);
+      const availW = Math.max(1, cellW - pad[3] - pad[1]);
+      const neededH = CanvasElementDrawer.measureCellContentHeight(ctx, cellParas, availW) + pad[0] + pad[2];
+      let spanH = 0;
+      for (let rr = m.startRow; rr <= m.endRow; rr++) {
+        spanH += rowHeights[rr];
+      }
+      if (neededH > spanH) {
+        rowHeights[m.endRow] += neededH - spanH;
+      }
+    }
+
+    for (let r = 0; r < numRows; r++) {
+      rowTops[r] = currentY;
+      currentY += rowHeights[r];
     }
     rowTops[numRows] = currentY;
 
@@ -707,23 +762,9 @@ export class CanvasElementDrawer {
           ctx.rect(x1, y1, cellW, cellH);
           ctx.clip();
 
-          const availW = Math.max(1, cellW - 10);
-          let cellContentH = 0;
-          for (let pIdx = 0; pIdx < cellParas.length; pIdx++) {
-            const para = cellParas[pIdx];
-            cellContentH += Math.max(0, para.before || 0);
-            if (para.image && para.imageWidth && para.imageHeight && para.imageWidth > 0 && para.imageHeight > 0) {
-              const fitW = Math.min(availW, para.imageWidth);
-              const fitH = para.imageHeight * (fitW / para.imageWidth);
-              cellContentH += fitH;
-            } else {
-              const lines = CanvasElementDrawer.layoutParagraph(ctx, para, availW, true);
-              for (let lIdx = 0; lIdx < lines.length; lIdx++) {
-                cellContentH += lines[lIdx].height;
-              }
-            }
-            cellContentH += Math.max(0, para.after || 0);
-          }
+          const pad = CanvasElementDrawer.cellPadding(element, r, c);
+          const availW = Math.max(1, cellW - pad[3] - pad[1]);
+          const cellContentH = CanvasElementDrawer.measureCellContentHeight(ctx, cellParas, availW);
 
           const vOffset = CanvasElementDrawer.resolveCellVerticalOffset(element, r, c, cellH, cellContentH);
           let paraY = y1 + vOffset;
@@ -736,7 +777,7 @@ export class CanvasElementDrawer {
                 paraY += Math.max(0, para.before || 0);
                 const fitW = Math.min(availW, para.imageWidth);
                 const fitH = para.imageHeight * (fitW / para.imageWidth);
-                let imgX = x1 + 5;
+                let imgX = x1 + pad[3];
                 if (para.alignment === 1) {
                   imgX += Math.max(0, (availW - fitW) / 2);
                 } else if (para.alignment === 2) {
@@ -753,7 +794,7 @@ export class CanvasElementDrawer {
               ctx,
               para,
               lines,
-              x1 + 5,
+              x1 + pad[3],
               paraY,
               availW
             );
@@ -1625,7 +1666,8 @@ export class CanvasElementDrawer {
       const anchorC = m ? m.startColumn : targetC;
       const x1 = colX[anchorC];
       const x2 = m ? colX[Math.min(cols, m.endColumn + 1)] : colX[anchorC + 1];
-      const availW = Math.max(1, x2 - x1 - 10);
+      const pad = CanvasElementDrawer.cellPadding(element, anchorR, anchorC);
+      const availW = Math.max(1, x2 - x1 - pad[3] - pad[1]);
       const cellY = rowTops[anchorR];
       const cellH = Math.max(1, (m ? rowTops[Math.min(numRows, m.endRow + 1)] : rowTops[anchorR + 1]) - cellY);
 
@@ -1663,7 +1705,7 @@ export class CanvasElementDrawer {
               para,
               match.startChar,
               match.endChar,
-              x1 + 5,
+              x1 + pad[3],
               paraY,
               availW,
               true
@@ -1948,6 +1990,24 @@ export class CanvasElementDrawer {
     return index;
   }
 
+  /**
+   * 取第 r 行的显式最小行高（pt）。
+   *
+   * 缺省、越界或非法（非有限值、负值）时返回 0，由调用方以 20pt 作为平台下限；
+   * 有效值钳位到 [0, 14400] 与核心层输出约束一致。
+   */
+  public static rowHeightAt(element: model.Element, r: number): number {
+    const heights = element.rowHeights;
+    if (heights === undefined || heights === null || r < 0 || r >= heights.length) {
+      return 0;
+    }
+    const value = heights[r];
+    if (typeof value !== 'number' || !isFinite(value) || value <= 0) {
+      return 0;
+    }
+    return Math.min(14400, value);
+  }
+
   /** 计算单元格内文字内容高度，与 drawTable / computeTableGeometry 的 cellContentH 完全一致 */
   private static measureCellContentHeight(
     ctx: OfficeCanvasContext | null,
@@ -1968,7 +2028,17 @@ export class CanvasElementDrawer {
           contentHeight += lines[lIdx].height;
         }
       } else {
-        contentHeight += 16;
+        // 无画布上下文（缩略图预估）时按字宽系数估算行数，与既有 computeTableGeometry 口径一致
+        let charCount = 0;
+        let maxFontSize = 12;
+        if (para.runs) {
+          for (let rIdx = 0; rIdx < para.runs.length; rIdx++) {
+            charCount += (para.runs[rIdx].text || '').length;
+            maxFontSize = Math.max(maxFontSize, para.runs[rIdx].size || 12);
+          }
+        }
+        const linesEstimate = Math.max(1, Math.ceil((charCount * maxFontSize * 0.6) / availWidth));
+        contentHeight += linesEstimate * CanvasElementDrawer.computeLineHeight(para, maxFontSize);
       }
       contentHeight += Math.max(0, para.after || 0);
     }
@@ -2050,13 +2120,14 @@ export class CanvasElementDrawer {
           const y2 = merge ? rowTops[Math.min(numRows, merge.endRow + 1)] : rowTops[r + 1];
           const cellW = Math.max(1, x2 - x1);
           const cellH = Math.max(1, y2 - y1);
-          // drawTable 与 computeElementHighlightRects 使用的单元格可用宽度均为 cellW - 10
-          const availW = Math.max(1, cellW - 10);
+          const pad = CanvasElementDrawer.cellPadding(element, r, c);
+          // drawTable 与 computeElementHighlightRects 使用同一套单元格内边距与可用宽度
+          const availW = Math.max(1, cellW - pad[3] - pad[1]);
           const cellContentH = CanvasElementDrawer.measureCellContentHeight(ctx, cellParas, availW);
           // 合并单元格只在锚点建块，垂直对齐查询同样以锚点 (r, c) 为准
           const vOffset = CanvasElementDrawer.resolveCellVerticalOffset(element, r, c, cellH, cellContentH);
-          // 单元格文字在元素局部坐标系中的起排原点，与 drawTable 的 (x1 + 5, y1 + vOffset) 一致
-          const cellOriginX = x1 + 5;
+          // 单元格文字在元素局部坐标系中的起排原点，与 drawTable 的 (x1 + padLeft, y1 + vOffset) 一致
+          const cellOriginX = x1 + pad[3];
           const cellOriginY = y1 + vOffset;
 
           const layout = CanvasElementDrawer.buildParagraphsBlockLines(
