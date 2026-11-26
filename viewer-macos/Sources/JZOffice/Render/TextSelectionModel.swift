@@ -443,24 +443,24 @@ public final class DocumentTextLayout: @unchecked Sendable {
                 let textParas = cellParas.filter { $0.image == nil }
                 if textParas.isEmpty { continue }
 
+                // 与 CGElementDrawer.drawTable 共用同一份内边距查询，
+                // 保证可用宽度与起排原点在绘制、检索高亮、文本选区三处完全一致
+                let pad = CGElementDrawer.cellPadding(element: element, row: r, col: c)
+                let availCellW = max(1, cellW - pad.left - pad.right)
+
                 var dummyEl = element
                 dummyEl.paragraphs = textParas
                 dummyEl.padding = 0
-                dummyEl.width = max(1, cellW - 10)
+                dummyEl.width = availCellW
                 dummyEl.height = 0
                 dummyEl.transform = [1, 0, 0, 1, 0, 0]
                 dummyEl.textWrap = true
 
-                var contentHeight: CGFloat = 0
-                let availCellW = max(1, cellW - 10)
-                for p in cellParas {
-                    if let _ = p.image, let w = p.imageWidth, let h = p.imageHeight, w > 0, h > 0 {
-                        let fitW = min(availCellW, w)
-                        let fitH = h * (fitW / w)
-                        contentHeight += fitH + max(0, p.before) + max(0, p.after)
-                    }
-                }
-                contentHeight += CGElementDrawer.measureParagraphsHeight(textParas, availableWidth: availCellW, wrap: true)
+                let contentHeight = CGElementDrawer.measureCellContentHeight(
+                    cellParas: cellParas,
+                    availableWidth: availCellW,
+                    wrap: true
+                )
                 // 合并单元格只在锚点建块，垂直对齐偏移与 CGElementDrawer.drawTable 共用同一方法
                 let vOffset = CGElementDrawer.resolveCellVerticalOffset(
                     element: element,
@@ -471,11 +471,16 @@ public final class DocumentTextLayout: @unchecked Sendable {
                 )
 
                 if let blk = buildParagraphsBlock(element: dummyEl, blockIndex: curIdx) {
-                    let cellLocalOrigin = CGPoint(x: x1 + 5, y: y1 + vOffset)
+                    let cellLocalOrigin = CGPoint(x: x1 + pad.left, y: y1 + vOffset)
                     let cellTransform = tableAffine.concatenating(
                         CGAffineTransform(translationX: cellLocalOrigin.x, y: cellLocalOrigin.y)
                     )
-                    let cellRect = CGRect(x: 0, y: 0, width: max(1, cellW - 10), height: max(1, cellH - 10))
+                    let cellRect = CGRect(
+                        x: 0,
+                        y: 0,
+                        width: availCellW,
+                        height: max(1, cellH - pad.top - pad.bottom)
+                    )
                     let docBounds = cellRect.applying(cellTransform)
 
                     result.append(TextBlockLayout(

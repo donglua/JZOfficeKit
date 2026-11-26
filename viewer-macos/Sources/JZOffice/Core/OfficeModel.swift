@@ -277,6 +277,10 @@ public struct OfficeElement: Codable, Sendable {
     public var cellValigns: [[UInt8]]
     /// 单元格四边边框矩阵，每个元素为 [top, right, bottom, left]；为空表示沿用表格级统一网格框
     public var cellBorders: [[[OfficeCellBorder]]]
+    /// 表格各行最小高度（pt），长度与 `rows` 一致；为空表示沿用平台默认行高下限 20pt
+    public var rowHeights: [CGFloat]
+    /// 单元格四边内边距矩阵，每项为 [top, right, bottom, left]（pt）；为空表示全表默认 [5, 5, 5, 5]
+    public var cellPaddings: [[[CGFloat]]]
     /// 虚线描边点线序列（单位 point），按“实线长度、间隔长度”成对循环；为空表示实线
     public var strokeDash: [CGFloat]
     public var paths: [OfficePath]
@@ -294,6 +298,7 @@ public struct OfficeElement: Codable, Sendable {
         case type, x, y, width, height, transform, padding, fill, stroke, strokeWidth
         case image, imageBounds, verticalAlignment, textWrap, paragraphs, rows, columnWidths, cellFills, paths, fillGradient, merges
         case cellValigns, cellBorders, strokeDash
+        case rowHeights, cellPaddings
         case wrapMode, horizontalAlign, behindDoc, distTop, distBottom, distLeft, distRight
     }
 
@@ -318,6 +323,8 @@ public struct OfficeElement: Codable, Sendable {
         cellFills: [[UInt32]] = [],
         cellValigns: [[UInt8]] = [],
         cellBorders: [[[OfficeCellBorder]]] = [],
+        rowHeights: [CGFloat] = [],
+        cellPaddings: [[[CGFloat]]] = [],
         strokeDash: [CGFloat] = [],
         paths: [OfficePath] = [],
         fillGradient: OfficeGradientFill? = nil,
@@ -350,6 +357,8 @@ public struct OfficeElement: Codable, Sendable {
         self.cellFills = cellFills
         self.cellValigns = cellValigns
         self.cellBorders = cellBorders
+        self.rowHeights = rowHeights
+        self.cellPaddings = cellPaddings
         self.strokeDash = strokeDash
         self.paths = paths
         self.fillGradient = fillGradient
@@ -385,6 +394,11 @@ public struct OfficeElement: Codable, Sendable {
         self.cellFills = try c.decodeIfPresent([[UInt32]].self, forKey: .cellFills) ?? []
         self.cellValigns = try c.decodeIfPresent([[UInt8]].self, forKey: .cellValigns) ?? []
         self.cellBorders = try c.decodeIfPresent([[[OfficeCellBorder]]].self, forKey: .cellBorders) ?? []
+        // 行高与内边距为 schemaVersion 9 的可选增强字段：缺省保持空数组，非法值在解码期清洗
+        let rawRowHeights = try c.decodeIfPresent([CGFloat].self, forKey: .rowHeights) ?? []
+        self.rowHeights = rawRowHeights.map(Self.clampRowHeight)
+        let rawPaddings = try c.decodeIfPresent([[[CGFloat]]].self, forKey: .cellPaddings) ?? []
+        self.cellPaddings = Self.sanitizeCellPaddings(rawPaddings)
         // 虚线序列按 core 协议校验：长度 2..=16 且每个元素为有限正数、上限 10000，非法值整体回退为实线
         let rawDash = try c.decodeIfPresent([CGFloat].self, forKey: .strokeDash) ?? []
         self.strokeDash = Self.validDash(rawDash)
@@ -404,6 +418,29 @@ public struct OfficeElement: Codable, Sendable {
     private static func clampWrapDistance(_ value: CGFloat?) -> CGFloat {
         guard let value, value.isFinite else { return 0 }
         return max(0, min(1200, value))
+    }
+
+    /// 行高下限钳位：非有限值与负值按 0（表示缺省）处理，上限 14400pt 与 core 保持一致
+    private static func clampRowHeight(_ value: CGFloat) -> CGFloat {
+        guard value.isFinite else { return 0 }
+        return max(0, min(14_400, value))
+    }
+
+    /// 清洗内边距矩阵：每格必须恰好 4 条边，单边非有限值按 0 处理并钳位 0...1000。
+    ///
+    /// 任一行出现非 4 元边距时该行整体回退为空数组而不是被丢弃：
+    /// 调用方按行索引查询 `cellPaddings[r][c]`，丢弃行会让后续行错位套用上一行的边距，
+    /// 因此保留行占位、让该行整体落到缺省 `[5, 5, 5, 5]` 才是安全语义。
+    private static func sanitizeCellPaddings(_ raw: [[[CGFloat]]]) -> [[[CGFloat]]] {
+        raw.map { row in
+            guard row.allSatisfy({ $0.count == 4 }) else { return [] }
+            return row.map { edges in
+                edges.map { value in
+                    guard value.isFinite else { return 0 }
+                    return max(0, min(1000, value))
+                }
+            }
+        }
     }
 
     /// 校验虚线点线序列：仅接受 2...16 个有限正数（上限 10000 point），其余整体回退为实线

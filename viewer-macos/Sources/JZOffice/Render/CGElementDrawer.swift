@@ -257,6 +257,50 @@ public enum CGElementDrawer {
         }
     }
 
+    /// 查询单元格四边内边距，顺序为 [top, right, bottom, left]。
+    ///
+    /// `cellPaddings` 缺省、越界或该格边距不合法时一律回退 DrawingML 缺省前的平台统一值 `(5, 5, 5, 5)`，
+    /// 从而保证旧版 schemaVersion = 9 JSON（不含该字段）的排版与既有行为完全一致。
+    /// 正文绘制、检索高亮与文本选区三处必须共用本方法。
+    public static func cellPadding(
+        element: OfficeElement,
+        row: Int,
+        col: Int
+    ) -> (top: CGFloat, right: CGFloat, bottom: CGFloat, left: CGFloat) {
+        let fallback: (top: CGFloat, right: CGFloat, bottom: CGFloat, left: CGFloat) = (5, 5, 5, 5)
+        guard row >= 0, row < element.cellPaddings.count else { return fallback }
+        let rowPaddings = element.cellPaddings[row]
+        guard col >= 0, col < rowPaddings.count else { return fallback }
+        let edges = rowPaddings[col]
+        guard edges.count == 4, edges.allSatisfy({ $0.isFinite }) else { return fallback }
+        return (edges[0], edges[1], edges[2], edges[3])
+    }
+
+    /// 测量单元格内容（含内嵌图片与段落）在给定可用宽度下的高度。
+    ///
+    /// `computeTableGeometry` 的行高结算与 `drawTable` 的垂直对齐都需要同一个内容高度，
+    /// 统一收敛到本方法可避免两处测量口径漂移导致的文字裁切或错位。
+    internal static func measureCellContentHeight(
+        cellParas: [OfficeParagraph],
+        availableWidth: CGFloat,
+        wrap: Bool
+    ) -> CGFloat {
+        let availW = max(1, availableWidth)
+        var contentHeight: CGFloat = 0
+        for p in cellParas {
+            if let _ = p.image, let w = p.imageWidth, let h = p.imageHeight, w > 0, h > 0 {
+                let fitW = min(availW, w)
+                let fitH = h * (fitW / w)
+                contentHeight += fitH + max(0, p.before) + max(0, p.after)
+            }
+        }
+        let textParas = cellParas.filter { $0.image == nil }
+        if !textParas.isEmpty {
+            contentHeight += measureParagraphsHeight(textParas, availableWidth: availW, wrap: wrap)
+        }
+        return contentHeight
+    }
+
     public static func computeTableGeometry(
         element: OfficeElement
     ) -> (cols: Int, colWidths: [CGFloat], colX: [CGFloat], rowTops: [CGFloat]) {
@@ -270,38 +314,63 @@ public enum CGElementDrawer {
         for c in 0..<cols {
             colX[c + 1] = colX[c] + colWidths[c]
         }
-        var rowTops = [CGFloat](repeating: 0, count: numRows + 1)
-        var y: CGFloat = 0
-        for (r, row) in rows.enumerated() {
-            rowTops[r] = y
-            var rowHeight: CGFloat = 20
+
+        // 阶段 1：以 max(20, rowHeights[r]) 为下限，并只让非纵向跨越的单元格撑高本行
+        var rowHeights = [CGFloat](repeating: 20, count: numRows)
+        for r in 0..<numRows {
+            if r < element.rowHeights.count {
+                let explicit = element.rowHeights[r]
+                if explicit.isFinite {
+                    rowHeights[r] = max(20, explicit)
+                }
+            }
+            let row = rows[r]
             for c in 0..<cols {
                 let m = findMerge(element.merges, r: r, c: c)
-                if let m, (m.startRow != r || m.startColumn != c) {
-                    continue
-                }
+                if let m, (m.startRow != r || m.startColumn != c) { continue }
+                // 纵向合并单元格在阶段 2 统一按跨行总高结算，避免把高度全部压在首行
+                if let m, m.endRow > m.startRow { continue }
                 let x1 = colX[c]
                 let x2 = m != nil ? colX[min(cols, m!.endColumn + 1)] : colX[c + 1]
                 let cellW = max(1, x2 - x1)
+                let pad = cellPadding(element: element, row: r, col: c)
+                let availW = max(1, cellW - pad.left - pad.right)
                 let cellParas = c < row.count ? row[c] : []
-                if !cellParas.isEmpty {
-                    var cellContentH: CGFloat = 0
-                    let availW = max(1, cellW - 10)
-                    for para in cellParas {
-                        if let _ = para.image, let w = para.imageWidth, let h = para.imageHeight, w > 0, h > 0 {
-                            let fitW = min(availW, w)
-                            let fitH = h * (fitW / w)
-                            cellContentH += fitH + max(0, para.before) + max(0, para.after)
-                        }
-                    }
-                    let textParas = cellParas.filter { $0.image == nil }
-                    if !textParas.isEmpty {
-                        cellContentH += measureParagraphsHeight(textParas, availableWidth: availW, wrap: true)
-                    }
-                    rowHeight = max(rowHeight, cellContentH + 10)
-                }
+                if cellParas.isEmpty { continue }
+                let contentH = measureCellContentHeight(cellParas: cellParas, availableWidth: availW, wrap: true)
+                rowHeights[r] = max(rowHeights[r], contentH + pad.top + pad.bottom)
             }
-            y += rowHeight
+        }
+
+        // 阶段 2：纵向合并单元格仅在跨行总高不足时把差额补到 endRow，保持各行原始比例
+        for m in element.merges {
+            guard m.endRow > m.startRow,
+                  m.startRow >= 0, m.endRow < numRows,
+                  m.startColumn >= 0, m.startColumn < cols else { continue }
+            let x1 = colX[m.startColumn]
+            let x2 = colX[min(cols, m.endColumn + 1)]
+            let cellW = max(1, x2 - x1)
+            let pad = cellPadding(element: element, row: m.startRow, col: m.startColumn)
+            let availW = max(1, cellW - pad.left - pad.right)
+            let row = rows[m.startRow]
+            let cellParas = m.startColumn < row.count ? row[m.startColumn] : []
+            if cellParas.isEmpty { continue }
+            let neededH = measureCellContentHeight(cellParas: cellParas, availableWidth: availW, wrap: true)
+                + pad.top + pad.bottom
+            var spanH: CGFloat = 0
+            for rr in m.startRow...m.endRow {
+                spanH += rowHeights[rr]
+            }
+            if neededH > spanH {
+                rowHeights[m.endRow] += neededH - spanH
+            }
+        }
+
+        var rowTops = [CGFloat](repeating: 0, count: numRows + 1)
+        var y: CGFloat = 0
+        for r in 0..<numRows {
+            rowTops[r] = y
+            y += rowHeights[r]
         }
         rowTops[numRows] = y
         return (cols, colWidths, colX, rowTops)
@@ -315,10 +384,11 @@ public enum CGElementDrawer {
     /// 解析单元格文字起排的垂直偏移。
     ///
     /// 正文绘制、全文检索高亮与文本选区三处必须共用本方法，保证三套坐标完全一致：
-    /// - 0（顶部对齐）恒为 5；
-    /// - 1（垂直居中，缺省行为）剩余空间充足时居中，否则回退到 5；
-    /// - 2（底部对齐）剩余空间充足时贴近底部并预留 5 的内边距，否则回退到 5。
+    /// - 剩余空间不足以容纳上下内边距，或 0（顶部对齐）时恒返回 padTop；
+    /// - 1（垂直居中，缺省行为）在剩余空间充足时按 padTop / padBottom 居中；
+    /// - 2（底部对齐）剩余空间充足时贴近底部并预留 padBottom。
     /// 查询坐标必须传入合并区域的锚点 (row, col)，与文字实际存放的单元格保持一致。
+    /// 当 padTop == padBottom == 5 时本方法与旧版固定 5pt 内边距公式数学等价。
     public static func resolveCellVerticalOffset(
         element: OfficeElement,
         row: Int,
@@ -333,16 +403,17 @@ public enum CGElementDrawer {
                 valign = rowValigns[col]
             }
         }
+        let pad = cellPadding(element: element, row: row, col: col)
 
-        // 剩余空间不足时任何对齐方式都退回 5 的基准内边距，避免文字被贴边裁切
+        // 剩余空间不足以容纳上下内边距时任何对齐方式都退回 padTop，避免文字被贴边裁切
         let remaining = cellHeight - contentHeight
-        if remaining <= 10 || valign == 0 {
-            return 5
+        if remaining <= pad.top + pad.bottom || valign == 0 {
+            return pad.top
         }
         if valign == 2 {
-            return max(5, remaining - 5)
+            return max(pad.top, remaining - pad.bottom)
         }
-        return max(5, remaining / 2)
+        return max(pad.top, pad.top + (remaining - pad.top - pad.bottom) / 2)
     }
 
     /// 按单元格四边独立边框绘制线段。
@@ -442,20 +513,15 @@ public enum CGElementDrawer {
 
                 let cellParas = c < row.count ? row[c] : []
                 if !cellParas.isEmpty {
-                    let availW = max(1, cellRect.width - 10)
-                    var contentHeight: CGFloat = 0
-                    for p in cellParas {
-                        if let _ = p.image, let w = p.imageWidth, let h = p.imageHeight, w > 0, h > 0 {
-                            let fitW = min(availW, w)
-                            let fitH = h * (fitW / w)
-                            contentHeight += fitH + max(0, p.before) + max(0, p.after)
-                        }
-                    }
+                    let pad = cellPadding(element: element, row: r, col: c)
+                    let availW = max(1, cellRect.width - pad.left - pad.right)
+                    let contentHeight = measureCellContentHeight(
+                        cellParas: cellParas,
+                        availableWidth: availW,
+                        wrap: true
+                    )
                     let textParas = cellParas.filter { $0.image == nil }
                     let lines = textParas.isEmpty ? [] : layoutParagraphs(textParas, availableWidth: availW, wrap: true)
-                    for line in lines {
-                        contentHeight += line.before + line.height + line.after
-                    }
 
                     // 合并单元格只在锚点绘制文字，(r, c) 本身即锚点坐标
                     let vOffset = resolveCellVerticalOffset(
@@ -475,7 +541,7 @@ public enum CGElementDrawer {
                             curCellY += max(0, p.before)
                             let fitW = min(availW, w)
                             let fitH = h * (fitW / w)
-                            var imgX = x1 + 5
+                            var imgX = x1 + pad.left
                             if p.alignment == 1 {
                                 imgX += (availW - fitW) / 2.0
                             } else if p.alignment == 2 {
@@ -498,7 +564,7 @@ public enum CGElementDrawer {
                         drawLaidOutLines(
                             in: ctx,
                             lines: lines,
-                            originX: x1 + 5,
+                            originX: x1 + pad.left,
                             originY: curCellY,
                             availableWidth: availW
                         )
@@ -1449,20 +1515,14 @@ public enum CGElementDrawer {
                 let x2 = m != nil ? colX[min(cols, m!.endColumn + 1)] : colX[anchorC + 1]
                 let cellX = blockOriginX + x1
                 let cellW = max(1, x2 - x1)
-                let availCellW = max(1, cellW - 10)
+                let pad = cellPadding(element: block, row: anchorR, col: anchorC)
+                let availCellW = max(1, cellW - pad.left - pad.right)
                 let cellH = rowTops[min(block.rows.count, (m?.endRow ?? r) + 1)] - rowTops[anchorR]
-                var contentHeight: CGFloat = 0
-                for p in cellParas {
-                    if let _ = p.image, let w = p.imageWidth, let h = p.imageHeight, w > 0, h > 0 {
-                        let fitW = min(availCellW, w)
-                        let fitH = h * (fitW / w)
-                        contentHeight += fitH + max(0, p.before) + max(0, p.after)
-                    }
-                }
-                let textParas = cellParas.filter { $0.image == nil }
-                if !textParas.isEmpty {
-                    contentHeight += measureParagraphsHeight(textParas, availableWidth: availCellW, wrap: true)
-                }
+                let contentHeight = measureCellContentHeight(
+                    cellParas: cellParas,
+                    availableWidth: availCellW,
+                    wrap: true
+                )
                 // 文字存放在合并区域的锚点单元格，垂直对齐查询以 (anchorR, anchorC) 为准
                 let vOffset = resolveCellVerticalOffset(
                     element: block,
@@ -1471,7 +1531,7 @@ public enum CGElementDrawer {
                     cellHeight: cellH,
                     contentHeight: contentHeight
                 )
-                let cellOrigin = CGPoint(x: cellX + 5, y: blockOriginY + rowTops[anchorR] + vOffset)
+                let cellOrigin = CGPoint(x: cellX + pad.left, y: blockOriginY + rowTops[anchorR] + vOffset)
                 return charHighlightRects(
                     paragraphs: cellParas,
                     targetParagraphIndex: match.paragraphIndex,
@@ -1560,20 +1620,14 @@ public enum CGElementDrawer {
                 let x1 = colX[anchorC]
                 let x2 = m != nil ? colX[min(cols, m!.endColumn + 1)] : colX[anchorC + 1]
                 let cellW = max(1, x2 - x1)
-                let availCellW = max(1, cellW - 10)
+                let pad = cellPadding(element: el, row: anchorR, col: anchorC)
+                let availCellW = max(1, cellW - pad.left - pad.right)
                 let cellH = rowTops[min(el.rows.count, (m?.endRow ?? r) + 1)] - rowTops[anchorR]
-                var contentHeight: CGFloat = 0
-                for p in cellParas {
-                    if let _ = p.image, let w = p.imageWidth, let h = p.imageHeight, w > 0, h > 0 {
-                        let fitW = min(availCellW, w)
-                        let fitH = h * (fitW / w)
-                        contentHeight += fitH + max(0, p.before) + max(0, p.after)
-                    }
-                }
-                let textParas = cellParas.filter { $0.image == nil }
-                if !textParas.isEmpty {
-                    contentHeight += measureParagraphsHeight(textParas, availableWidth: availCellW, wrap: true)
-                }
+                let contentHeight = measureCellContentHeight(
+                    cellParas: cellParas,
+                    availableWidth: availCellW,
+                    wrap: true
+                )
                 // 文字存放在合并区域的锚点单元格，垂直对齐查询以 (anchorR, anchorC) 为准
                 let vOffset = resolveCellVerticalOffset(
                     element: el,
@@ -1582,7 +1636,7 @@ public enum CGElementDrawer {
                     cellHeight: cellH,
                     contentHeight: contentHeight
                 )
-                let cellOrigin = CGPoint(x: x1 + 5, y: rowTops[anchorR] + vOffset)
+                let cellOrigin = CGPoint(x: x1 + pad.left, y: rowTops[anchorR] + vOffset)
                 let localRects = charHighlightRects(
                     paragraphs: cellParas,
                     targetParagraphIndex: match.paragraphIndex,

@@ -2184,6 +2184,352 @@ struct JZOfficeTests {
         #expect(abs((bottomRect.minY - bottomedPlan.placements[0].frame.minY) - bottomY) < 0.5)
     }
 
+    @Test("OfficeElement 解码 rowHeights 与 cellPaddings，缺省为空并清洗非法值")
+    func tableRowHeightsAndCellPaddingsDecoding() throws {
+        // 1. 显式携带行高下限与四边内边距矩阵
+        let json = """
+        {
+            "type": "TABLE",
+            "width": 200,
+            "columnWidths": [100, 100],
+            "rowHeights": [48, 24],
+            "cellPaddings": [
+                [[0, 12, 8, 16], [3.6, 7.2, 3.6, 7.2]],
+                [[5, 5, 5, 5], [12, 0, 4, 2]]
+            ],
+            "rows": [
+                [[{"runs": [{"text": "A1"}]}], [{"runs": [{"text": "B1"}]}]],
+                [[{"runs": [{"text": "A2"}]}], [{"runs": [{"text": "B2"}]}]]
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let element = try JSONDecoder().decode(OfficeElement.self, from: json)
+        #expect(element.rowHeights == [48, 24])
+        #expect(element.cellPaddings.count == 2)
+        #expect(element.cellPaddings[0].count == 2)
+        #expect(element.cellPaddings[0][0] == [0, 12, 8, 16])
+        #expect(element.cellPaddings[0][1] == [3.6, 7.2, 3.6, 7.2])
+        #expect(element.cellPaddings[1][1] == [12, 0, 4, 2])
+
+        // 2. 缺省时保持空数组，兼容既有 schemaVersion = 9 JSON
+        let plainJSON = """
+        {
+            "type": "TABLE",
+            "width": 200,
+            "rows": [[[{"runs": [{"text": "普通"}]}]]]
+        }
+        """.data(using: .utf8)!
+        let plain = try JSONDecoder().decode(OfficeElement.self, from: plainJSON)
+        #expect(plain.rowHeights.isEmpty)
+        #expect(plain.cellPaddings.isEmpty)
+
+        // 3. 非法值清洗：负数钳位到 0、超界钳位到上限、
+        //    非 4 元边距所在行整体回退为空（保留行索引对齐，该行按缺省 [5, 5, 5, 5] 处理）
+        let dirtyJSON = """
+        {
+            "type": "TABLE",
+            "width": 200,
+            "rowHeights": [-5, 20000, 30],
+            "cellPaddings": [
+                [[-1, 12, 8, 16], [3.6, 7.2, 3.6, 7.2]],
+                [[1, 2, 3], [5, 5, 5, 5000]]
+            ],
+            "rows": [
+                [[{"runs": [{"text": "A1"}]}], [{"runs": [{"text": "B1"}]}]],
+                [[{"runs": [{"text": "A2"}]}], [{"runs": [{"text": "B2"}]}]]
+            ]
+        }
+        """.data(using: .utf8)!
+        let dirty = try JSONDecoder().decode(OfficeElement.self, from: dirtyJSON)
+        // 负值钳位到 0，超界钳位到 14400
+        #expect(dirty.rowHeights == [0, 14400, 30])
+        // 第 2 行含长度不为 4 的边距，整行回退为空；第 1 行保留并把 -1 钳位到 0
+        #expect(dirty.cellPaddings.count == 2)
+        #expect(dirty.cellPaddings[0][0] == [0, 12, 8, 16])
+        #expect(dirty.cellPaddings[0][1] == [3.6, 7.2, 3.6, 7.2])
+        #expect(dirty.cellPaddings[1].isEmpty)
+        // 回退的行在查询侧落到缺省内边距
+        let dirtyPad = CGElementDrawer.cellPadding(element: dirty, row: 1, col: 0)
+        #expect(dirtyPad.top == 5 && dirtyPad.right == 5 && dirtyPad.bottom == 5 && dirtyPad.left == 5)
+
+        // 4. 成员初始化参数默认值保持既有调用点可用
+        let defaulted = OfficeElement(type: .table)
+        #expect(defaulted.rowHeights.isEmpty)
+        #expect(defaulted.cellPaddings.isEmpty)
+    }
+
+    @Test("cellPadding 查询缺省 [5,5,5,5]，computeTableGeometry 按 rowHeights 与纵向合并差额分配行高")
+    func tableRowHeightsAndCellPaddingGeometry() throws {
+        // 1. cellPadding：缺省、界内、越界与非法行各分支
+        let plain = OfficeElement(type: .table)
+        let plainPad = CGElementDrawer.cellPadding(element: plain, row: 0, col: 0)
+        #expect(plainPad.top == 5 && plainPad.right == 5 && plainPad.bottom == 5 && plainPad.left == 5)
+
+        let padded = OfficeElement(
+            type: .table,
+            width: 200,
+            columnWidths: [100, 100],
+            cellPaddings: [[[0, 12, 8, 16], [5, 5, 5, 5]]]
+        )
+        let pad00 = CGElementDrawer.cellPadding(element: padded, row: 0, col: 0)
+        #expect(pad00.top == 0 && pad00.right == 12 && pad00.bottom == 8 && pad00.left == 16)
+        // 越界行列回退缺省
+        let outOfRange = CGElementDrawer.cellPadding(element: padded, row: 9, col: 9)
+        #expect(outOfRange.top == 5 && outOfRange.left == 5)
+
+        // 2. rowHeights = [48, 24] 在短文本下维持至少 48 / 24 的行高
+        let shortText = #"[{"runs": [{"text": "短"}]}]"#
+        let rowHeightsJSON = """
+        {
+            "type": "TABLE",
+            "width": 200,
+            "columnWidths": [100, 100],
+            "rowHeights": [48, 24],
+            "rows": [[\(shortText)], [\(shortText)]]
+        }
+        """.data(using: .utf8)!
+        let rowHeightsElement = try JSONDecoder().decode(OfficeElement.self, from: rowHeightsJSON)
+        let geom = CGElementDrawer.computeTableGeometry(element: rowHeightsElement)
+        #expect(geom.rowTops.count == 3)
+        #expect(abs((geom.rowTops[1] - geom.rowTops[0]) - 48) < 0.5)
+        #expect(abs((geom.rowTops[2] - geom.rowTops[1]) - 24) < 0.5)
+
+        // 3. 非对称内边距参与行高：padTop + padBottom 计入内容高度
+        let tallPadJSON = """
+        {
+            "type": "TABLE",
+            "width": 200,
+            "columnWidths": [200],
+            "cellPaddings": [[[30, 0, 20, 0]]],
+            "rows": [[\(shortText)]]
+        }
+        """.data(using: .utf8)!
+        let tallPadElement = try JSONDecoder().decode(OfficeElement.self, from: tallPadJSON)
+        let tallGeom = CGElementDrawer.computeTableGeometry(element: tallPadElement)
+        let textOnlyH = CGElementDrawer.measureParagraphsHeight(
+            tallPadElement.rows[0][0], availableWidth: 200, wrap: true
+        )
+        // 行高至少为 文本高度 + padTop + padBottom（30 + 20）
+        #expect(tallGeom.rowTops[1] >= textOnlyH + 50 - 0.5)
+
+        // 4. 纵向合并：两行显式 rowHeights 总高已足够时不虚增首行，差额补齐到末行
+        let mergeJSON = """
+        {
+            "type": "TABLE",
+            "width": 200,
+            "columnWidths": [100, 100],
+            "rowHeights": [40, 40],
+            "merges": [{"startRow": 0, "startColumn": 0, "endRow": 1, "endColumn": 0}],
+            "rows": [
+                [[{"runs": [{"text": "纵向合并内容"}]}], [{"runs": [{"text": "B1"}]}]],
+                [[], [{"runs": [{"text": "B2"}]}]]
+            ]
+        }
+        """.data(using: .utf8)!
+        let mergeElement = try JSONDecoder().decode(OfficeElement.self, from: mergeJSON)
+        let mergeGeom = CGElementDrawer.computeTableGeometry(element: mergeElement)
+        let spanH = mergeGeom.rowTops[2] - mergeGeom.rowTops[0]
+        let mergedTextH = CGElementDrawer.measureParagraphsHeight(
+            mergeElement.rows[0][0], availableWidth: 100 - 10, wrap: true
+        )
+        // 两行显式高度合计 80 已足够容纳合并内容，首行保持 40 不被压缩/拉高
+        #expect(mergedTextH + 10 <= 80)
+        #expect(abs((mergeGeom.rowTops[1] - mergeGeom.rowTops[0]) - 40) < 0.5)
+        #expect(abs(spanH - 80) < 0.5)
+
+        // 5. 纵向合并：显式高度不足时差额只补到末行，首行维持原值
+        let shortMergeJSON = """
+        {
+            "type": "TABLE",
+            "width": 200,
+            "columnWidths": [100, 100],
+            "rowHeights": [20, 20],
+            "merges": [{"startRow": 0, "startColumn": 0, "endRow": 1, "endColumn": 0}],
+            "rows": [
+                [[{"runs": [{"text": "纵向合并内容较长需要更多纵向空间", "size": 24}]}], [{"runs": [{"text": "B1"}]}]],
+                [[], [{"runs": [{"text": "B2"}]}]]
+            ]
+        }
+        """.data(using: .utf8)!
+        let shortMergeElement = try JSONDecoder().decode(OfficeElement.self, from: shortMergeJSON)
+        let shortGeom = CGElementDrawer.computeTableGeometry(element: shortMergeElement)
+        let shortMergedTextH = CGElementDrawer.measureParagraphsHeight(
+            shortMergeElement.rows[0][0], availableWidth: 100 - 10, wrap: true
+        )
+        // 首行只由非纵向跨越高度的 (0,1) 决定：显式行高 20 与「内容高 + 上下内边距 10」取较大值；
+        // 纵向合并的 (0,0) 不参与首行撑高，其差额全部由末行吸收
+        let sideCellH = CGElementDrawer.measureParagraphsHeight(
+            shortMergeElement.rows[0][1], availableWidth: 100 - 10, wrap: true
+        )
+        let expectedFirstRow = max(20, sideCellH + 10)
+        #expect(abs((shortGeom.rowTops[1] - shortGeom.rowTops[0]) - expectedFirstRow) < 0.5)
+        #expect(abs((shortGeom.rowTops[2] - shortGeom.rowTops[0]) - (shortMergedTextH + 10)) < 0.5)
+    }
+
+    @Test("自定义 cellPaddings 下 PPTX/DOCX 检索高亮与文本选区坐标与绘制严格对齐")
+    func tableCellPaddingHighlightAndSelectionAlignment() throws {
+        // 非对称内边距：左 16 / 右 12 / 上 8 / 下 8，行高下限 48 拉出充足剩余空间
+        let padding = #"[[[0, 12, 8, 16]]]"#
+        func pptxJSON(valign: Int, paddings: String) -> Data {
+            """
+            {
+              "schemaVersion": 9,
+              "kind": "PPTX",
+              "width": 720,
+              "pages": [{
+                "width": 720,
+                "height": 405,
+                "elements": [{
+                  "type": "TABLE",
+                  "width": 200,
+                  "columnWidths": [200],
+                  "rowHeights": [48],
+                  "cellValigns": [[\(valign)]],
+                  "cellPaddings": \(paddings),
+                  "rows": [[[{"runs": [{"text": "对齐校验", "size": 12, "color": 4278190080}]}]]]
+                }]
+              }]
+            }
+            """.data(using: .utf8)!
+        }
+        func docxJSON(valign: Int, paddings: String) -> Data {
+            """
+            {
+              "schemaVersion": 9,
+              "kind": "DOCX",
+              "width": 595,
+              "blocks": [{
+                "type": "TABLE",
+                "width": 200,
+                "columnWidths": [200],
+                "rowHeights": [48],
+                "cellValigns": [[\(valign)]],
+                "cellPaddings": \(paddings),
+                "rows": [[[{"runs": [{"text": "对齐校验", "size": 12, "color": 4278190080}]}]]]
+              }]
+            }
+            """.data(using: .utf8)!
+        }
+
+        // 逐分支验证：Top(0) / Center(1) / Bottom(2) 三种垂直对齐都要对齐
+        for valign in 0...2 {
+            let pptxDoc = try JSONDecoder().decode(OfficeDocument.self, from: pptxJSON(valign: valign, paddings: padding))
+            let docxDoc = try JSONDecoder().decode(OfficeDocument.self, from: docxJSON(valign: valign, paddings: padding))
+            let element = pptxDoc.pages[0].elements[0]
+            let geom = CGElementDrawer.computeTableGeometry(element: element)
+            let cellH = geom.rowTops[1] - geom.rowTops[0]
+            let cellW = geom.colX[1] - geom.colX[0]
+            let pad = CGElementDrawer.cellPadding(element: element, row: 0, col: 0)
+            #expect(pad.top == 0 && pad.right == 12 && pad.bottom == 8 && pad.left == 16)
+            let availW = max(1, cellW - pad.left - pad.right)
+            let contentH = CGElementDrawer.measureParagraphsHeight(
+                element.rows[0][0], availableWidth: availW, wrap: true
+            )
+            let vOffset = CGElementDrawer.resolveCellVerticalOffset(
+                element: element, row: 0, col: 0, cellHeight: cellH, contentHeight: contentH
+            )
+
+            let match = OfficeSearchMatch(
+                pageIndex: 0, elementIndex: 0, paragraphIndex: 0, row: 0, column: 0,
+                startChar: 0, endChar: 4, snippet: "对齐校验"
+            )
+
+            // 1. PPTX 检索高亮：x 起点 = 单元格左边界 + padLeft，y 起点 = 行顶 + vOffset
+            let pptxRects = CGElementDrawer.computeHighlightRects(for: match, in: pptxDoc)
+            guard let pptxRect = pptxRects.first else {
+                Issue.record("PPTX 表格检索命中未产生高亮矩形（valign=\(valign)）")
+                return
+            }
+            #expect(abs(pptxRect.minX - pad.left) < 0.5,
+                    "PPTX 高亮左边界应按 padLeft=16 起排（valign=\(valign)），实际 \(pptxRect.minX)")
+            #expect(abs(pptxRect.minY - vOffset) < 0.5,
+                    "PPTX 高亮顶部应按 vOffset 对齐（valign=\(valign)）")
+
+            // 2. PPTX 文本选区：选区块 transform 原点必须与高亮同源
+            let pptxLayout = DocumentTextLayout.build(from: pptxDoc)
+            guard let pptxBlock = pptxLayout.blocks.first(where: { $0.fullText.contains("对齐校验") }) else {
+                Issue.record("PPTX 表格未构建出文本块（valign=\(valign)）")
+                return
+            }
+            #expect(abs(pptxBlock.transform.tx - pad.left) < 0.5,
+                    "PPTX 选区原点 x 应与绘制共用 padLeft（valign=\(valign)）")
+            #expect(abs(pptxBlock.transform.ty - vOffset) < 0.5,
+                    "PPTX 选区原点 y 应与绘制共用 vOffset（valign=\(valign)）")
+
+            // 3. DOCX 检索高亮与文本选区：同一套内边距基准
+            let docxPlan = CGElementDrawer.layoutDocxBlocks(in: docxDoc)
+            guard let placement = docxPlan.placements.first else {
+                Issue.record("DOCX 表格未产生 placement（valign=\(valign)）")
+                return
+            }
+            let docxRects = CGElementDrawer.computeHighlightRects(for: match, in: docxDoc, docxPlan: docxPlan)
+            guard let docxRect = docxRects.first else {
+                Issue.record("DOCX 表格检索命中未产生高亮矩形（valign=\(valign)）")
+                return
+            }
+            #expect(abs((docxRect.minX - placement.frame.minX) - pad.left) < 0.5,
+                    "DOCX 高亮左边界应按 padLeft 起排（valign=\(valign)）")
+            #expect(abs((docxRect.minY - placement.frame.minY) - vOffset) < 0.5,
+                    "DOCX 高亮顶部应按 vOffset 对齐（valign=\(valign)）")
+
+            let docxLayout = DocumentTextLayout.build(from: docxDoc)
+            guard let docxBlock = docxLayout.blocks.first(where: { $0.fullText.contains("对齐校验") }) else {
+                Issue.record("DOCX 表格未构建出文本块（valign=\(valign)）")
+                return
+            }
+            #expect(abs((docxBlock.transform.tx - placement.frame.minX) - pad.left) < 0.5,
+                    "DOCX 选区原点 x 应与绘制共用 padLeft（valign=\(valign)）")
+            #expect(abs((docxBlock.transform.ty - placement.frame.minY) - vOffset) < 0.5,
+                    "DOCX 选区原点 y 应与绘制共用 vOffset（valign=\(valign)）")
+        }
+
+        // 4. 端到端：离屏绘制时文字实际像素同样按 padLeft 起排，不回落到 5pt 老位置
+        let w = 260
+        let h = 80
+        func render(_ el: OfficeElement) -> [UInt8] {
+            let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+            var bytes = [UInt8](repeating: 255, count: w * h * 4)
+            let ctx = CGContext(
+                data: &bytes, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )!
+            ctx.translateBy(x: 0, y: CGFloat(h))
+            ctx.scaleBy(x: 1, y: -1)
+            CGElementDrawer.drawElement(in: ctx, element: el, images: [:])
+            return bytes
+        }
+        func firstDarkColumn(_ bytes: [UInt8]) -> Int? {
+            // 跳过表格外框本身（左边界线宽约 1pt，且描边在 0..1 像素内），
+            // 否则两种内边距都会在 x=0 命中边框墨迹而失去区分度
+            for x in 2..<w {
+                for y in 0..<h {
+                    let idx = (y * w + x) * 4
+                    if bytes[idx] < 200 || bytes[idx + 1] < 200 || bytes[idx + 2] < 200 {
+                        return x
+                    }
+                }
+            }
+            return nil
+        }
+        // 从 PPTX 文档里取表格元素做离屏绘制，避免单独构造时漏掉同样的字段
+        let paddedTable = try JSONDecoder().decode(OfficeDocument.self, from: pptxJSON(valign: 0, paddings: padding))
+            .pages[0].elements[0]
+        let paddedFirstDark = firstDarkColumn(render(paddedTable))
+
+        let legacyTable = try JSONDecoder().decode(OfficeDocument.self, from: pptxJSON(valign: 0, paddings: "[]"))
+            .pages[0].elements[0]
+        let legacyFirstDark = firstDarkColumn(render(legacyTable))
+
+        guard let paddedX = paddedFirstDark, let legacyX = legacyFirstDark else {
+            Issue.record("离屏绘制未产生任何文字像素")
+            return
+        }
+        // 缺省内边距左 5pt，自定义左 16pt：首列墨迹应整体右移约 11pt
+        #expect(abs(CGFloat(paddedX - legacyX) - 11) < 3,
+                "自定义 padLeft=16 的绘制起排应比缺省 padLeft=5 右移约 11pt，实际 \(paddedX) vs \(legacyX)")
+    }
+
     @Test("strokeDash 虚线描边解码与离屏绘制")
     func strokeDashDecodingAndRendering() throws {
         // 1. 解码：含 strokeDash 的元素
