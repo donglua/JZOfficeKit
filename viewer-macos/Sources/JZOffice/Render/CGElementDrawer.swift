@@ -272,7 +272,7 @@ public enum CGElementDrawer {
         let rowPaddings = element.cellPaddings[row]
         guard col >= 0, col < rowPaddings.count else { return fallback }
         let edges = rowPaddings[col]
-        guard edges.count == 4, edges.allSatisfy({ $0.isFinite }) else { return fallback }
+        guard edges.count == 4, edges.allSatisfy({ $0.isFinite && $0 >= 0 }) else { return fallback }
         return (edges[0], edges[1], edges[2], edges[3])
     }
 
