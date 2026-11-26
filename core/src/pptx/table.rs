@@ -4,7 +4,8 @@ use super::render::Render;
 use super::table_style::{
     parse_line, resolve_table_style, Edge, EDGE_BOTTOM, EDGE_LEFT, EDGE_RIGHT, EDGE_TOP,
 };
-use crate::model::{CellBorder, CellRange, Document, Element, ElementType, Run};
+use super::text::RunOverride;
+use crate::model::{CellBorder, CellRange, Document, Element, ElementType};
 use crate::xml::Node;
 use crate::{Error, Result};
 
@@ -146,18 +147,17 @@ impl Render<'_> {
                 let cell_col = cells.len();
                 let paragraphs = match cell.child("txBody") {
                     Some(body) => {
-                        let initial = self.cell_initial_run(&resolved, cell_row, cell_col, body);
-                        self.paragraphs_with_base(body, &[], initial)?
+                        let override_run =
+                            self.cell_run_override(&resolved, cell_row, cell_col, body);
+                        self.paragraphs_with_override(body, &[], &override_run)?
                     }
                     None => Vec::new(),
                 };
                 cells.push(paragraphs);
                 let properties = cell.child("tcPr");
-                let fill = match properties {
-                    Some(properties) => self.theme.fill(properties, 0, self.doc),
-                    None => 0,
-                };
-                fills.push(fill);
+                // 填充色稍后在 apply_table_styles 中按表样式级联与 tcPr 显式填充统一结算，
+                // 这里先占位 0，避免对同一单元格重复求值 Theme::fill。
+                fills.push(0);
                 // <a:tcPr anchor="t|ctr|b"> 映射为 0 顶部 / 1 居中 / 2 底部
                 let align = properties.and_then(|p| match p.attr("anchor") {
                     "t" => Some(0u8),
@@ -249,43 +249,31 @@ fn cell_padding(properties: Option<&Node>) -> [f32; 4] {
 }
 
 impl Render<'_> {
-    /// 构造单元格正文解析的初始 `Run` 基线。
+    /// 构造单元格正文来自表样式 `tcTxStyle` 的文本覆盖项。
     ///
-    /// 以表样式 `tcTxStyle` 的粗体、斜体、字色与主题字体为底；单元格自身的
-    /// `lstStyle` / `pPr/defRPr` / `rPr` 仍会在 `Text::read_with_base` 内覆盖该基线，
-    /// 因此单元格直设文本样式优先级高于表样式。
-    fn cell_initial_run(
+    /// 在 `Text::read_with_override` 中位于演示默认 / 母版 `otherStyle` 之后、
+    /// 单元格 `lstStyle` / `pPr/defRPr` / `rPr` 之前应用，保证深底表头的浅色粗体字不会被母版冲掉，
+    /// 同时单元格直设文本样式优先级仍高于表样式。
+    fn cell_run_override(
         &self,
         resolved: &super::table_style::ResolvedTableStyles,
         row: usize,
         col: usize,
         body: &Node,
-    ) -> Run {
-        let defaults = resolved.texts.get(row).and_then(|cells| cells.get(col));
-        let mut initial = Run {
-            size: 18.0,
-            color: defaults
-                .and_then(|d| d.color)
-                .unwrap_or_else(|| self.theme.text_color()),
-            ..Run::default()
+    ) -> RunOverride {
+        let Some(defaults) = resolved.texts.get(row).and_then(|cells| cells.get(col)) else {
+            return RunOverride::default();
         };
-        let Some(defaults) = defaults else {
-            return initial;
-        };
-        if let Some(bold) = defaults.bold {
-            initial.bold = bold;
-        }
-        if let Some(italic) = defaults.italic {
-            initial.italic = italic;
-        }
-        // 主题字体：按单元格是否含东亚文字选择 ea / latin 字族
-        if let Some(key) = defaults.font_key.as_deref() {
+        let font_face = defaults.font_key.as_deref().and_then(|key| {
             let east_asian = body_has_east_asian(body);
-            if let Some(face) = self.theme.font_face(key, east_asian) {
-                initial.font_face = face.to_owned();
-            }
+            self.theme.font_face(key, east_asian).map(str::to_owned)
+        });
+        RunOverride {
+            bold: defaults.bold,
+            italic: defaults.italic,
+            color: defaults.color,
+            font_face,
         }
-        initial
     }
 
     /// 把表样式级联结果写入元素：填充、`tcTxStyle` 文本基线、`<a:tcPr>` 直设覆盖与边框收敛。
@@ -347,7 +335,56 @@ impl Render<'_> {
             }
         }
 
-        // 直设边框同步到共享邻边，确保邻格重绘时不遮盖直设样式或 noFill
+        // 1. 合并区域外框归并：
+        //    - 当末列/末行外缘格显式直设了该边，或锚点未直设时，沿用外缘格的边框；
+        //    - 当只有锚点直设了右/下边且外缘格未直设时，保留锚点直设边并同步到外缘格，
+        //      避免被被覆盖格的 Unset/表样式边抹掉，同时让后续邻边传播对齐外侧相邻格；
+        //    - 若存在多行合并，把锚点左/右直设边同样同步到该合并区域的外侧每行；多列合并同理处理上下边。
+        for merge in &element.merges {
+            let (sr, sc) = (merge.start_row as usize, merge.start_column as usize);
+            let (er, ec) = (merge.end_row as usize, merge.end_column as usize);
+            if sr >= rows || sc >= cols || er >= rows || ec >= cols {
+                continue;
+            }
+            if direct[sr][ec][EDGE_RIGHT] || !direct[sr][sc][EDGE_RIGHT] {
+                edges[sr][sc][EDGE_RIGHT] = edges[sr][ec][EDGE_RIGHT];
+            } else {
+                for row_idx in sr..=er {
+                    if !direct[row_idx][ec][EDGE_RIGHT] {
+                        edges[row_idx][ec][EDGE_RIGHT] = edges[sr][sc][EDGE_RIGHT];
+                        direct[row_idx][ec][EDGE_RIGHT] = true;
+                    }
+                }
+            }
+            if direct[er][sc][EDGE_BOTTOM] || !direct[sr][sc][EDGE_BOTTOM] {
+                edges[sr][sc][EDGE_BOTTOM] = edges[er][sc][EDGE_BOTTOM];
+            } else {
+                for col_idx in sc..=ec {
+                    if !direct[er][col_idx][EDGE_BOTTOM] {
+                        edges[er][col_idx][EDGE_BOTTOM] = edges[sr][sc][EDGE_BOTTOM];
+                        direct[er][col_idx][EDGE_BOTTOM] = true;
+                    }
+                }
+            }
+            if direct[sr][sc][EDGE_LEFT] {
+                for row_idx in sr..=er {
+                    if !direct[row_idx][sc][EDGE_LEFT] {
+                        edges[row_idx][sc][EDGE_LEFT] = edges[sr][sc][EDGE_LEFT];
+                        direct[row_idx][sc][EDGE_LEFT] = true;
+                    }
+                }
+            }
+            if direct[sr][sc][EDGE_TOP] {
+                for col_idx in sc..=ec {
+                    if !direct[sr][col_idx][EDGE_TOP] {
+                        edges[sr][col_idx][EDGE_TOP] = edges[sr][sc][EDGE_TOP];
+                        direct[sr][col_idx][EDGE_TOP] = true;
+                    }
+                }
+            }
+        }
+
+        // 2. 直设边框同步到共享邻边，确保邻格重绘时不遮盖直设样式或 noFill
         for r in 0..rows {
             for c in 0..cols {
                 if direct[r][c][EDGE_RIGHT] && c + 1 < cols && !direct[r][c + 1][EDGE_LEFT] {
@@ -363,17 +400,6 @@ impl Render<'_> {
                     edges[r - 1][c][EDGE_BOTTOM] = edges[r][c][EDGE_TOP];
                 }
             }
-        }
-
-        // 合并区域外框归并：锚点右上取末列边、下边取末行边
-        for merge in &element.merges {
-            let (sr, sc) = (merge.start_row as usize, merge.start_column as usize);
-            let (er, ec) = (merge.end_row as usize, merge.end_column as usize);
-            if sr >= rows || sc >= cols || er >= rows || ec >= cols {
-                continue;
-            }
-            edges[sr][sc][EDGE_RIGHT] = edges[sr][ec][EDGE_RIGHT];
-            edges[sr][sc][EDGE_BOTTOM] = edges[er][sc][EDGE_BOTTOM];
         }
 
         apply_border_output(element, &edges, resolved.has_any_border_rule);
@@ -461,10 +487,14 @@ fn apply_border_output(element: &mut Element, edges: &[Vec<[Edge; 4]>], has_any_
 /// 避免本地重复维护字符范围时漏掉韩文（U+AC00..U+D7AF）等区段。
 fn body_has_east_asian(body: &Node) -> bool {
     body.named("p").any(|paragraph| {
-        paragraph.named("r").any(|run| {
-            run.named("t")
-                .any(|segment| crate::model::contains_east_asian(&segment.text))
-        })
+        paragraph
+            .children
+            .iter()
+            .filter(|node| matches!(node.name.as_str(), "r" | "fld"))
+            .any(|run| {
+                run.named("t")
+                    .any(|segment| crate::model::contains_east_asian(&segment.text))
+            })
     })
 }
 

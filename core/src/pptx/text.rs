@@ -7,6 +7,18 @@ use crate::model::{Document, Paragraph, Run};
 use crate::xml::Node;
 use crate::{Error, Result};
 
+/// 表格单元格由 `tableStyles.xml` `tcTxStyle` 注入的文本覆盖项。
+///
+/// 在演示默认与母版 `txStyles/otherStyle` 之后、单元格自身 `lstStyle`/`pPr`/`rPr`
+/// 之前生效，确保表头浅色字不会被母版默认深色字抹回黑色，同时允许单元格直设属性继续覆盖。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RunOverride {
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub color: Option<u32>,
+    pub font_face: Option<String>,
+}
+
 pub(super) struct Text<'a> {
     pub doc: &'a mut Document,
     pub theme: &'a Theme,
@@ -18,27 +30,36 @@ pub(super) struct Text<'a> {
 
 impl Text<'_> {
     pub fn read(&mut self, body: &Node) -> Result<Vec<Paragraph>> {
-        let initial = Run {
-            size: 18.0,
-            color: self.theme.text_color(),
-            ..Run::default()
-        };
-        self.read_with_base(body, initial)
-    }
-
-    /// 以调用方给定的 `initial_run` 作为段落级基线读取正文。
-    ///
-    /// 供 PPTX 表格注入 `tcTxStyle` 的表头粗斜体、字色与主题字体：单元格内的
-    /// `lstStyle`、`pPr/defRPr`、`rPr` 与 `endParaRPr` 仍按既有优先级覆盖该基线，
-    /// 因此单元格直设文本样式始终高于表样式。
-    pub fn read_with_base(&mut self, body: &Node, initial: Run) -> Result<Vec<Paragraph>> {
         read_paragraphs_inner(
             body,
             self.chain,
             self.defaults,
             self.master,
             self.theme,
-            initial,
+            18.0,
+            None,
+            self.doc,
+            &mut |bytes| self.budget.text(bytes),
+        )
+    }
+
+    /// 携带 `tcTxStyle` 文本覆盖读取单元格正文。
+    ///
+    /// 优先级：`presentation/defaultTextStyle` 与 `master/txStyles/otherStyle` < `override_run`
+    /// < 单元格 `txBody/lstStyle` < `pPr/defRPr` < `rPr` / `endParaRPr`。
+    pub fn read_with_override(
+        &mut self,
+        body: &Node,
+        override_run: &RunOverride,
+    ) -> Result<Vec<Paragraph>> {
+        read_paragraphs_inner(
+            body,
+            self.chain,
+            self.defaults,
+            self.master,
+            self.theme,
+            18.0,
+            Some(override_run),
             self.doc,
             &mut |bytes| self.budget.text(bytes),
         )
@@ -63,11 +84,8 @@ pub(crate) fn read_drawing_paragraphs(
         None,
         None,
         theme,
-        Run {
-            size: default_font_size,
-            color: theme.text_color(),
-            ..Run::default()
-        },
+        default_font_size,
+        None,
         doc,
         add_text_bytes,
     )
@@ -80,7 +98,8 @@ fn read_paragraphs_inner(
     defaults_source: Option<&Node>,
     master: Option<&Node>,
     theme: &Theme,
-    initial_run: Run,
+    default_font_size: f32,
+    override_run: Option<&RunOverride>,
     doc: &mut Document,
     add_text_bytes: &mut impl FnMut(usize) -> Result<()>,
 ) -> Result<Vec<Paragraph>> {
@@ -98,6 +117,9 @@ fn read_paragraphs_inner(
             level,
             &mut defaults,
         );
+        // 演示默认与母版样式边界：tableStyles tcTxStyle 必须在这些低优先基线之后、
+        // 单元格自身的 lstStyle / pPr 之前注入，避免母版深色字把表头浅色字冲掉。
+        let master_count = defaults.len();
         for shape in chain {
             if let Some(reference) = shape.child("style").and_then(|n| n.child("fontRef")) {
                 defaults.push(reference);
@@ -121,14 +143,23 @@ fn read_paragraphs_inner(
         if let Some(direct) = direct {
             defaults.push(direct);
         }
-        let mut base = initial_run.clone();
+        let mut base = Run {
+            size: default_font_size,
+            color: theme.text_color(),
+            ..Run::default()
+        };
         let mut result = Paragraph {
             after: 0.0,
             ..Paragraph::default()
         };
         let mut bullet = None;
         let mut styles = TextStyle { doc, theme };
-        for properties in defaults {
+        let mut applied_override = false;
+        for (index, properties) in defaults.into_iter().enumerate() {
+            if index == master_count {
+                apply_run_override(&mut base, override_run);
+                applied_override = true;
+            }
             if properties.name == "fontRef" {
                 base.color = styles.theme.color(properties, base.color, styles.doc);
                 continue;
@@ -143,6 +174,9 @@ fn read_paragraphs_inner(
                     bullet = Some(property);
                 }
             }
+        }
+        if !applied_override {
+            apply_run_override(&mut base, override_run);
         }
         if let Some(bullet) = bullet {
             match bullet.name.as_str() {
@@ -223,6 +257,25 @@ fn collect_runs(
         runs.push(run);
     }
     Ok(())
+}
+
+fn apply_run_override(base: &mut Run, override_run: Option<&RunOverride>) {
+    let Some(override_run) = override_run else {
+        return;
+    };
+    if let Some(bold) = override_run.bold {
+        base.bold = bold;
+    }
+    if let Some(italic) = override_run.italic {
+        base.italic = italic;
+    }
+    if let Some(color) = override_run.color {
+        base.color = color;
+    }
+    if let Some(font_face) = &override_run.font_face {
+        base.font_face = font_face.clone();
+        base.weight = crate::model::infer_font_weight(&base.font_face);
+    }
 }
 
 fn paragraph_level(node: &Node) -> usize {

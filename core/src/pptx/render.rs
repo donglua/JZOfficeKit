@@ -3,10 +3,10 @@ use super::geometry::Bounds;
 use super::inheritance;
 use super::parts::Part;
 use super::styles::Styles;
-use super::text::Text;
+use super::text::{RunOverride, Text};
 use super::transform::{self, Transform};
 use super::{flag, relation_id, Budget};
-use crate::model::{Document, Element, ElementType, GradientFill, ImageCrop, Page, Paragraph, Run};
+use crate::model::{Document, Element, ElementType, GradientFill, ImageCrop, Page, Paragraph};
 use crate::xml::Node;
 use crate::{Package, Result};
 
@@ -264,12 +264,12 @@ impl Render<'_> {
         .read(body)
     }
 
-    /// 以调用方给定的 `initial` 基线读取段落，供 PPTX 表格注入 `tcTxStyle` 表头样式。
-    pub(super) fn paragraphs_with_base(
+    /// 以调用方给定的 `tcTxStyle` 覆盖项读取段落，供 PPTX 表格注入表头样式。
+    pub(super) fn paragraphs_with_override(
         &mut self,
         body: &Node,
         chain: &[&Node],
-        initial: Run,
+        override_run: &RunOverride,
     ) -> Result<Vec<Paragraph>> {
         Text {
             doc: self.doc,
@@ -279,7 +279,7 @@ impl Render<'_> {
             master: self.master,
             chain,
         }
-        .read_with_base(body, initial)
+        .read_with_override(body, override_run)
     }
 
     fn emit(&mut self, page: &mut Page, mut element: Element, transform: Transform) -> Result<()> {

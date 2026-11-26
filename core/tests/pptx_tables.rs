@@ -311,14 +311,17 @@ fn table_style_cascade_applies_banding_fills_borders_and_tx_style() -> TestResul
             <a:nwCell><a:tcStyle><a:fill><a:solidFill><a:srgbClr val="E76F51"/></a:solidFill></a:fill></a:tcStyle></a:nwCell>
         </a:tblStyle>
     </a:tblStyleLst>"#;
-    // 2 行 2 列，启用表头、首列与行带；第二行第二格显式 noFill，第一行第一格无填充子树
+    // 2 行 2 列，启用表头、首列与行带；
+    // 第 1 行第 1 格无显式 rPr 颜色（应继承 firstRow tcTxStyle 的 lt1 白色），
+    // 第 1 行第 2 格保留默认无颜色（同样应继承 lt1 白色），
+    // 第 2 行第 2 格显式 noFill 清零底纹。
     let table_xml = r#"<a:tr h="360000">
             <a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>Header</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>
             <a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>Header2</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>
         </a:tr>
         <a:tr h="360000">
             <a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>Body</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>
-            <a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>Clear</a:t></a:r></a:p></a:txBody>
+            <a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:rPr><a:solidFill><a:srgbClr val="123456"/></a:solidFill></a:rPr><a:t>Clear</a:t></a:r></a:p></a:txBody>
                 <a:tcPr><a:noFill/></a:tcPr></a:tc>
         </a:tr>"#;
     let mut parts = pptx::parts();
@@ -386,13 +389,22 @@ fn table_style_cascade_applies_banding_fills_borders_and_tx_style() -> TestResul
         "explicit noFill clears style shading"
     );
 
-    // 表头 tcTxStyle：粗体（母版 otherStyle 会覆盖颜色基线，故仅断言粗体）
+    // 表头 tcTxStyle：粗体、浅色文字（不得被母版 otherStyle 默认深色字冲掉）与主题字体
     let header_run = &table.rows[0][1][0].runs[0];
     assert!(header_run.bold, "header run is bold from tcTxStyle");
+    assert_eq!(
+        header_run.color, 0xffff_ffff,
+        "header run keeps lt1 color from tcTxStyle over master otherStyle"
+    );
     // 主题字体由 tcTxStyle 的 fontRef/@idx="minor" 解析而来
     assert_eq!(
         header_run.font_face, "Arial",
         "header run uses theme minorFont latin typeface"
+    );
+    // 正文单元格显式 rPr 颜色仍然高于一切继承/默认颜色
+    assert_eq!(
+        table.rows[1][1][0].runs[0].color, 0xff12_3456,
+        "explicit cell rPr color wins"
     );
 
     // 表头 tcBdr 底线落到 cell_borders
@@ -441,6 +453,59 @@ fn merged_cells_collapse_outer_borders_from_covered_edges() -> TestResult {
     assert_eq!(
         anchor[2].color, 0xffff_ff00,
         "anchor bottom comes from covered (1,0)"
+    );
+    Ok(())
+}
+
+#[test]
+fn merged_anchor_direct_border_wins_when_covered_edge_is_implicit() -> TestResult {
+    // 3x3 表格：(0,0) 跨 2x2 合并，且仅锚点 (0,0) 直设 lnR/lnB，被覆盖格无边框声明。
+    // 期望锚点直设边框保留下来，并同步到相邻未合并格 (0,2)/(1,2)/(2,0)/(2,1)。
+    let rows = r#"<a:tr h="360000">
+            <a:tc gridSpan="2" rowSpan="2"><a:txBody><a:bodyPr/><a:p><a:r><a:t>Merged</a:t></a:r></a:p></a:txBody>
+                <a:tcPr>
+                    <a:lnR w="25400"><a:solidFill><a:srgbClr val="E76F51"/></a:solidFill></a:lnR>
+                    <a:lnB w="19050"><a:solidFill><a:srgbClr val="2A9D8F"/></a:solidFill></a:lnB>
+                </a:tcPr></a:tc>
+            <a:tc hMerge="1"><a:txBody><a:bodyPr/><a:p/></a:txBody><a:tcPr/></a:tc>
+            <a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>R0C2</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>
+        </a:tr>
+        <a:tr h="360000">
+            <a:tc vMerge="1"><a:txBody><a:bodyPr/><a:p/></a:txBody><a:tcPr/></a:tc>
+            <a:tc hMerge="1" vMerge="1"><a:txBody><a:bodyPr/><a:p/></a:txBody><a:tcPr/></a:tc>
+            <a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>R1C2</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>
+        </a:tr>
+        <a:tr h="360000">
+            <a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>R2C0</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>
+            <a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>R2C1</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>
+            <a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>R2C2</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>
+        </a:tr>"#;
+    let document = document_with_styles(rows, 3, None)?;
+    let table = table(&document)?;
+    let anchor = table.cell_borders[0][0];
+    assert_eq!(
+        anchor[1].color, 0xffe7_6f51,
+        "anchor direct right preserved"
+    );
+    assert_eq!(
+        anchor[2].color, 0xff2a_9d8f,
+        "anchor direct bottom preserved"
+    );
+    assert_eq!(
+        table.cell_borders[0][2][3].color, 0xffe7_6f51,
+        "adjacent R0C2 left matches merged right"
+    );
+    assert_eq!(
+        table.cell_borders[1][2][3].color, 0xffe7_6f51,
+        "adjacent R1C2 left matches merged right"
+    );
+    assert_eq!(
+        table.cell_borders[2][0][0].color, 0xff2a_9d8f,
+        "adjacent R2C0 top matches merged bottom"
+    );
+    assert_eq!(
+        table.cell_borders[2][1][0].color, 0xff2a_9d8f,
+        "adjacent R2C1 top matches merged bottom"
     );
     Ok(())
 }
