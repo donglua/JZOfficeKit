@@ -155,6 +155,12 @@ pub fn parts() -> TestResult<OwnedParts> {
             .zip(&masters)
             .map(|(id, path)| (id.as_str(), "slideMaster", path.as_str())),
     );
+    // 表样式定义库为整份演示文稿共享：转到 showcase/base/ 命名空间下继续生效
+    relations.push((
+        "rTableStyles",
+        "tableStyles",
+        "showcase/base/tableStyles.xml",
+    ));
     let slide_list: String = slide_ids
         .iter()
         .enumerate()

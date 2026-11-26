@@ -35,7 +35,12 @@ pub fn parts() -> Parts {
                     "presentationml.slideMaster",
                 ),
                 ("ppt/theme/theme1.xml", "theme"),
-            ]),
+                ("_styles", "styles"),
+            ])
+            .replace(
+                r#"<Override PartName="/_styles" ContentType="application/vnd.openxmlformats-officedocument.styles+xml"/>"#,
+                r#"<Override PartName="/ppt/tableStyles.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.tableStyles+xml"/>"#,
+            ),
         ),
         xml(
             "_rels/.rels",
@@ -48,6 +53,7 @@ pub fn parts() -> Parts {
                 ("rFirst", "slide", "slides/slide1.xml"),
                 ("rSecond", "slide", "slides/slide2.xml"),
                 ("rMaster", "slideMaster", "slideMasters/slideMaster1.xml"),
+                ("rTableStyles", "tableStyles", "tableStyles.xml"),
             ]),
         ),
         xml(
@@ -80,6 +86,7 @@ pub fn parts() -> Parts {
             ]),
         ),
         xml("ppt/theme/theme1.xml", &theme::theme()),
+        xml("ppt/tableStyles.xml", &shapes::table_styles()),
         ("ppt/media/pixel.png", PNG.to_vec()),
     ]
 }
