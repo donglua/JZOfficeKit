@@ -26,3 +26,7 @@ docs/superpowers/
 build-profile.json5.local
 __pycache__/
 *.pyc
+
+# 本地工具链缓存（沙箱内构建用）
+.gradle-user/
+.swift-cache/
