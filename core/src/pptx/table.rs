@@ -88,6 +88,21 @@ impl Render<'_> {
         let mut row_heights: Vec<f32> = Vec::new();
         let mut cell_paddings: Vec<Vec<[f32; 4]>> = Vec::new();
         let mut any_diagonal_or_3d = false;
+        // 先统计行数以解析表样式，使每个单元格正文只解析一次（tcTxStyle 作为初始基线直接注入），
+        // 避免"先按默认基线解析、再整格重解析"造成解析翻倍与文本预算被重复计入。
+        let row_count_estimate = table.named("tr").take(501).count();
+        if row_count_estimate > 500 {
+            return Err(Error::Limit("PPTX table exceeds 500 rows"));
+        }
+        let resolved = resolve_table_style(
+            table,
+            row_count_estimate,
+            cols,
+            self.table_styles.map(|part| &part.root),
+            self.theme,
+            self.budget,
+            self.doc,
+        );
         for row in table.named("tr") {
             if element.rows.len() >= 500 {
                 return Err(Error::Limit("PPTX table exceeds 500 rows"));
@@ -127,8 +142,13 @@ impl Render<'_> {
                         end_column: start_column.saturating_add(grid_span - 1),
                     });
                 }
+                let cell_row = element.rows.len();
+                let cell_col = cells.len();
                 let paragraphs = match cell.child("txBody") {
-                    Some(body) => self.paragraphs(body, &[])?,
+                    Some(body) => {
+                        let initial = self.cell_initial_run(&resolved, cell_row, cell_col, body);
+                        self.paragraphs_with_base(body, &[], initial)?
+                    }
                     None => Vec::new(),
                 };
                 cells.push(paragraphs);
@@ -179,17 +199,7 @@ impl Render<'_> {
         if element.rows.is_empty() {
             return Ok(Vec::new());
         }
-        let row_count = element.rows.len();
-        // 表样式级联：填充、四边边框与 tcTxStyle 文本基线
-        let resolved = resolve_table_style(
-            table,
-            row_count,
-            cols,
-            self.table_styles.map(|part| &part.root),
-            self.theme,
-            self.budget,
-            self.doc,
-        );
+        // 表样式级联：填充、四边边框（文本基线已在单元格解析时注入）
         self.apply_table_styles(&mut element, table, &resolved)?;
         resolve_merges(&mut element, &merge_flags, self.doc)?;
         if any_diagonal_or_3d {
@@ -239,6 +249,45 @@ fn cell_padding(properties: Option<&Node>) -> [f32; 4] {
 }
 
 impl Render<'_> {
+    /// 构造单元格正文解析的初始 `Run` 基线。
+    ///
+    /// 以表样式 `tcTxStyle` 的粗体、斜体、字色与主题字体为底；单元格自身的
+    /// `lstStyle` / `pPr/defRPr` / `rPr` 仍会在 `Text::read_with_base` 内覆盖该基线，
+    /// 因此单元格直设文本样式优先级高于表样式。
+    fn cell_initial_run(
+        &self,
+        resolved: &super::table_style::ResolvedTableStyles,
+        row: usize,
+        col: usize,
+        body: &Node,
+    ) -> Run {
+        let defaults = resolved.texts.get(row).and_then(|cells| cells.get(col));
+        let mut initial = Run {
+            size: 18.0,
+            color: defaults
+                .and_then(|d| d.color)
+                .unwrap_or_else(|| self.theme.text_color()),
+            ..Run::default()
+        };
+        let Some(defaults) = defaults else {
+            return initial;
+        };
+        if let Some(bold) = defaults.bold {
+            initial.bold = bold;
+        }
+        if let Some(italic) = defaults.italic {
+            initial.italic = italic;
+        }
+        // 主题字体：按单元格是否含东亚文字选择 ea / latin 字族
+        if let Some(key) = defaults.font_key.as_deref() {
+            let east_asian = body_has_east_asian(body);
+            if let Some(face) = self.theme.font_face(key, east_asian) {
+                initial.font_face = face.to_owned();
+            }
+        }
+        initial
+    }
+
     /// 把表样式级联结果写入元素：填充、`tcTxStyle` 文本基线、`<a:tcPr>` 直设覆盖与边框收敛。
     fn apply_table_styles(
         &mut self,
@@ -290,44 +339,9 @@ impl Render<'_> {
                         let Some(line) = properties.child(name) else {
                             continue;
                         };
-                        let edge = parse_line(line, self.theme, self.doc);
-                        if edge == Edge::Unset {
-                            continue;
-                        }
-                        edges[r][c][index] = edge;
+                        // parse_line 只会返回 Hidden 或 Line，不会返回 Unset
+                        edges[r][c][index] = parse_line(line, self.theme, self.doc);
                         direct[r][c][index] = true;
-                    }
-                }
-
-                // tcTxStyle 文本基线：粗体、斜体、字色与主题字体
-                let defaults = &resolved.texts[r][c];
-                let has_font = defaults.font_key.is_some();
-                if defaults.bold.is_some()
-                    || defaults.italic.is_some()
-                    || defaults.color.is_some()
-                    || has_font
-                {
-                    let body = cell.child("txBody");
-                    let mut initial = Run {
-                        size: 18.0,
-                        color: defaults.color.unwrap_or_else(|| self.theme.text_color()),
-                        ..Run::default()
-                    };
-                    if let Some(bold) = defaults.bold {
-                        initial.bold = bold;
-                    }
-                    if let Some(italic) = defaults.italic {
-                        initial.italic = italic;
-                    }
-                    // 主题字体：按单元格是否含东亚文字选择 ea / latin 字族
-                    if let Some(key) = defaults.font_key.as_deref() {
-                        let east_asian = body.is_some_and(contains_east_asian);
-                        if let Some(face) = self.theme.font_face(key, east_asian) {
-                            initial.font_face = face.to_owned();
-                        }
-                    }
-                    if let Some(body) = body {
-                        element.rows[r][c] = self.paragraphs_with_base(body, &[], initial)?;
                     }
                 }
             }
@@ -442,14 +456,14 @@ fn apply_border_output(element: &mut Element, edges: &[Vec<[Edge; 4]>], has_any_
 }
 
 /// 判断正文中是否出现东亚文字，用于在主题 `fontScheme` 中挑选 `ea` 或 `latin` 字族。
-fn contains_east_asian(body: &Node) -> bool {
+///
+/// 复用 `model` 层的统一判定，覆盖 CJK 表意文字、假名、谚文与全角符号，
+/// 避免本地重复维护字符范围时漏掉韩文（U+AC00..U+D7AF）等区段。
+fn body_has_east_asian(body: &Node) -> bool {
     body.named("p").any(|paragraph| {
         paragraph.named("r").any(|run| {
-            run.named("t").any(|segment| {
-                segment.text.chars().any(
-                    |ch| matches!(ch as u32, 0x2E80..=0x9FFF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF),
-                )
-            })
+            run.named("t")
+                .any(|segment| crate::model::contains_east_asian(&segment.text))
         })
     })
 }

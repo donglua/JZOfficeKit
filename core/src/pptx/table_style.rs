@@ -46,7 +46,10 @@ pub(super) struct ResolvedTableStyles {
     pub fills: Vec<Vec<Option<u32>>>,
     pub borders: Vec<Vec<[Edge; 4]>>,
     pub texts: Vec<Vec<TextDefaults>>,
-    /// 是否存在任意样式块声明过 `<a:tcBdr>`；供 `table.rs` 判断是否需要输出 `cell_borders`。
+    /// 是否至少有一条边被级联写入（存在可见线或显式隐藏）。
+    ///
+    /// 仅"样式里声明了 `<a:tcBdr>`"不算：若该节未命中任何单元格（例如样式定义了 `lastRow`
+    /// 但 `<a:tblPr>` 未开启 `lastRow`），全表实际没有边框，必须让平台层沿用默认网格。
     pub has_any_border_rule: bool,
 }
 
@@ -262,10 +265,6 @@ fn apply_section(
         .map(|style| parse_text_style(style, theme, doc))
         .unwrap_or_default();
 
-    if border.is_some() {
-        resolved.has_any_border_rule = true;
-    }
-
     for r in 0..rows {
         for c in 0..cols {
             if !matches(r, c) {
@@ -353,6 +352,7 @@ fn apply_borders(
         // Unset 不覆盖已有级联结果；Hidden 与 Line 才生效
         if edge != Edge::Unset {
             resolved.borders[r][c][index] = edge;
+            resolved.has_any_border_rule = true;
         }
     }
 }
@@ -591,6 +591,69 @@ mod tests {
         assert_eq!(resolved.texts[0][1].font_key.as_deref(), Some("minor"));
         // 数据区未声明 tcTxStyle
         assert_eq!(resolved.texts[1][1].bold, None);
+        Ok(())
+    }
+
+    /// 覆盖 lastRow / lastCol / bandCol / neCell / swCell / seCell 的级联与列带奇偶判定。
+    #[test]
+    fn cascade_applies_last_row_column_banding_and_corners() -> crate::Result<()> {
+        let table_xml = build_table(
+            r#"firstRow="1" lastRow="1" firstCol="1" lastCol="1" bandRow="1" bandCol="1""#,
+            "{STYLE-3}",
+            4,
+            4,
+        )?;
+        let styles = r#"<a:tblStyleLst xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+            <a:tblStyle styleId="{STYLE-3}">
+                <a:wholeTbl><a:tcStyle><a:fill><a:solidFill><a:srgbClr val="010101"/></a:solidFill></a:fill></a:tcStyle></a:wholeTbl>
+                <a:band1V><a:tcStyle><a:fill><a:solidFill><a:srgbClr val="020202"/></a:solidFill></a:fill></a:tcStyle></a:band1V>
+                <a:band2V><a:tcStyle><a:fill><a:solidFill><a:srgbClr val="030303"/></a:solidFill></a:fill></a:tcStyle></a:band2V>
+                <a:band1H><a:tcStyle><a:fill><a:solidFill><a:srgbClr val="040404"/></a:solidFill></a:fill></a:tcStyle></a:band1H>
+                <a:band2H><a:tcStyle><a:fill><a:solidFill><a:srgbClr val="050505"/></a:solidFill></a:fill></a:tcStyle></a:band2H>
+                <a:firstCol><a:tcStyle><a:fill><a:solidFill><a:srgbClr val="060606"/></a:solidFill></a:fill></a:tcStyle></a:firstCol>
+                <a:lastCol><a:tcStyle><a:fill><a:solidFill><a:srgbClr val="070707"/></a:solidFill></a:fill></a:tcStyle></a:lastCol>
+                <a:firstRow><a:tcStyle><a:fill><a:solidFill><a:srgbClr val="080808"/></a:solidFill></a:fill></a:tcStyle></a:firstRow>
+                <a:lastRow><a:tcStyle><a:fill><a:solidFill><a:srgbClr val="090909"/></a:solidFill></a:fill></a:tcStyle></a:lastRow>
+                <a:neCell><a:tcStyle><a:fill><a:solidFill><a:srgbClr val="0A0A0A"/></a:solidFill></a:fill></a:tcStyle></a:neCell>
+                <a:swCell><a:tcStyle><a:fill><a:solidFill><a:srgbClr val="0B0B0B"/></a:solidFill></a:fill></a:tcStyle></a:swCell>
+                <a:seCell><a:tcStyle><a:fill><a:solidFill><a:srgbClr val="0C0C0C"/></a:solidFill></a:fill></a:tcStyle></a:seCell>
+            </a:tblStyle>
+        </a:tblStyleLst>"#;
+        let resolved = resolve(&table_xml, Some(styles), 4, 4)?;
+
+        // 四角：nwCell 未定义时由 firstRow 与 firstCol 叠加决定，neCell / swCell / seCell 最高优先
+        assert_eq!(resolved.fills[0][3], Some(0xff0a_0a0a), "neCell fill");
+        assert_eq!(resolved.fills[3][0], Some(0xff0b_0b0b), "swCell fill");
+        assert_eq!(resolved.fills[3][3], Some(0xff0c_0c0c), "seCell fill");
+        // lastRow 覆盖数据区行带
+        assert_eq!(
+            resolved.fills[3][1],
+            Some(0xff09_0909),
+            "lastRow fill beats band2H"
+        );
+        // lastCol 覆盖数据区列带
+        assert_eq!(
+            resolved.fills[1][3],
+            Some(0xff07_0707),
+            "lastCol fill beats band2V"
+        );
+        // 数据区起止：firstRow/firstCol 后第 1 行命中 band1H，第 2 行命中 band2H
+        assert_eq!(
+            resolved.fills[1][1],
+            Some(0xff04_0404),
+            "band1H on first data row"
+        );
+        assert_eq!(
+            resolved.fills[2][1],
+            Some(0xff05_0505),
+            "band2H on second data row"
+        );
+        // 列带：数据区第 1 列命中 band1V（被 band1H 覆盖），第 2 列命中 band2V 后再被 band2H 覆盖
+        assert_eq!(
+            resolved.fills[1][2],
+            Some(0xff04_0404),
+            "band1H wins over band2V"
+        );
         Ok(())
     }
 

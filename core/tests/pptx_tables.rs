@@ -478,6 +478,91 @@ fn row_heights_and_cell_margins_output_with_drawingml_defaults() -> TestResult {
     Ok(())
 }
 
+/// 样式里声明了 `<a:tcBdr>`、但该节未命中任何单元格（`tblPr` 未开启对应开关）时，
+/// 全表实际上没有任何边框，必须保持 `cell_borders` 为空以沿用平台默认网格，
+/// 否则平台层会因非空 `cell_borders` 而画不出默认框，表格视觉上变成无框表。
+#[test]
+fn unmatched_style_border_section_keeps_default_grid() -> TestResult {
+    let styles = r#"<a:tblStyleLst xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+        <a:tblStyle styleId="{9F1B0C7E-2D3A-4B58-8C1E-6A5D7E9B2C40}">
+            <a:lastRow><a:tcStyle><a:tcBdr>
+                <a:top><a:ln w="25400"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:ln></a:top>
+                <a:bottom><a:ln w="25400"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:ln></a:bottom>
+                <a:left><a:ln w="25400"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:ln></a:left>
+                <a:right><a:ln w="25400"><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></a:ln></a:right>
+            </a:tcBdr></a:tcStyle></a:lastRow>
+        </a:tblStyle>
+    </a:tblStyleLst>"#;
+    // tblPr 未启用 lastRow，故 lastRow 节不会命中任何单元格
+    let rows = r#"<a:tr h="360000">
+            <a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>A</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>
+            <a:tc><a:txBody><a:bodyPr/><a:p><a:r><a:t>B</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>
+        </a:tr>"#;
+    let mut parts = pptx::parts();
+    let grid = r#"<a:gridCol w="4572000"/><a:gridCol w="4572000"/>"#;
+    replace(
+        &mut parts,
+        "ppt/slides/slide2.xml",
+        &format!(
+            r#"<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+<p:cSld><p:spTree><p:graphicFrame><p:xfrm><a:off x="0" y="0"/><a:ext cx="9144000" cy="2528580"/></p:xfrm>
+<a:graphic><a:graphicData><a:tbl>
+<a:tblPr><a:tableStyleId>{{9F1B0C7E-2D3A-4B58-8C1E-6A5D7E9B2C40}}</a:tableStyleId></a:tblPr>
+<a:tblGrid>{grid}</a:tblGrid>{rows}</a:tbl></a:graphicData></a:graphic>
+</p:graphicFrame></p:spTree></p:cSld></p:sld>"#
+        ),
+    );
+    upsert(
+        &mut parts,
+        "ppt/tableStyles.xml",
+        styles.as_bytes().to_vec(),
+    );
+    upsert_part(
+        &mut parts,
+        xml(
+            "ppt/_rels/presentation.xml.rels",
+            &relationships(&[
+                ("rFirst", "slide", "slides/slide1.xml"),
+                ("rSecond", "slide", "slides/slide2.xml"),
+                ("rMaster", "slideMaster", "slideMasters/slideMaster1.xml"),
+                ("rTableStyles", "tableStyles", "tableStyles.xml"),
+            ]),
+        ),
+    );
+    upsert_part(
+        &mut parts,
+        xml(
+            "[Content_Types].xml",
+            &content_types(&[
+                ("ppt/presentation.xml", "presentationml.presentation.main"),
+                ("ppt/slides/slide1.xml", "presentationml.slide"),
+                ("ppt/slides/slide2.xml", "presentationml.slide"),
+                (
+                    "ppt/slideLayouts/slideLayout1.xml",
+                    "presentationml.slideLayout",
+                ),
+                (
+                    "ppt/slideMasters/slideMaster1.xml",
+                    "presentationml.slideMaster",
+                ),
+                ("ppt/theme/theme1.xml", "theme"),
+                ("_t", "t"),
+            ])
+            .replace(
+                r#"<Override PartName="/_t" ContentType="application/vnd.openxmlformats-officedocument.t+xml"/>"#,
+                r#"<Override PartName="/ppt/tableStyles.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.tableStyles+xml"/>"#,
+            ),
+        ),
+    );
+    let document = parse_reader(Cursor::new(archive(&parts)?))?;
+    let plain = table(&document)?;
+    assert!(
+        plain.cell_borders.is_empty(),
+        "unmatched tcBdr section must keep cell_borders empty so the platform draws its default grid"
+    );
+    Ok(())
+}
+
 #[test]
 fn unsupported_table_border_extras_emit_targeted_warnings() -> TestResult {
     let rows = r#"<a:tr h="360000">
