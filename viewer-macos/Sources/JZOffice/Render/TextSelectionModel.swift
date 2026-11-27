@@ -96,6 +96,17 @@ public struct TextLineLayout: @unchecked Sendable {
     }
 }
 
+/// 文本块内的超链接字符区间（UTF-16 偏移）与目标字符串
+public struct TextLinkSpan: Equatable, Sendable {
+    public let range: NSRange
+    public let target: String
+
+    public init(range: NSRange, target: String) {
+        self.range = range
+        self.target = target
+    }
+}
+
 /// 一个文本块（例如 DOCX 中的一个正文段落块/表格单元格，或 PPTX 中的一个文本形状）
 public struct TextBlockLayout: Sendable {
     public let blockIndex: Int
@@ -107,19 +118,23 @@ public struct TextBlockLayout: Sendable {
     public let fullText: String
     /// 内部所有排版行
     public let lines: [TextLineLayout]
+    /// 块内超链接区间表
+    public let links: [TextLinkSpan]
 
     public init(
         blockIndex: Int,
         bounds: CGRect,
         transform: CGAffineTransform,
         fullText: String,
-        lines: [TextLineLayout]
+        lines: [TextLineLayout],
+        links: [TextLinkSpan] = []
     ) {
         self.blockIndex = blockIndex
         self.bounds = bounds
         self.transform = transform
         self.fullText = fullText
         self.lines = lines
+        self.links = links
     }
 }
 
@@ -222,6 +237,7 @@ public final class DocumentTextLayout: @unchecked Sendable {
 
         var lines: [TextLineLayout] = []
         var fullTextParts: [String] = []
+        var linkSpans: [TextLinkSpan] = []
         var paraBaseOffset = 0
         var flowY: CGFloat = 0
 
@@ -254,6 +270,19 @@ public final class DocumentTextLayout: @unchecked Sendable {
             let attrString = CGElementDrawer.buildAttributedString(for: para)
             let paraStr = attrString.string
             fullTextParts.append(paraStr)
+
+            // 记录每个带 link 的 Run 在当前 Block fullText 中的 UTF-16 范围
+            var runOffset = paraBaseOffset + (para.bullet.isEmpty ? 0 : (para.bullet as NSString).length)
+            for run in para.runs {
+                let runLen = (run.text as NSString).length
+                if runLen > 0, let target = run.link ?? element.link, !target.isEmpty {
+                    linkSpans.append(TextLinkSpan(
+                        range: NSRange(location: runOffset, length: runLen),
+                        target: target
+                    ))
+                }
+                runOffset += runLen
+            }
 
             let defaultSize = para.runs.first?.size ?? 12
             let estLineH = CGElementDrawer.computeLineHeight(para: para, naturalHeight: max(10, defaultSize * 1.2))
@@ -400,7 +429,8 @@ public final class DocumentTextLayout: @unchecked Sendable {
             bounds: docBounds,
             transform: affine,
             fullText: joinedText,
-            lines: lines
+            lines: lines,
+            links: linkSpans
         )
     }
 
@@ -488,7 +518,8 @@ public final class DocumentTextLayout: @unchecked Sendable {
                         bounds: docBounds,
                         transform: cellTransform,
                         fullText: blk.fullText,
-                        lines: blk.lines
+                        lines: blk.lines,
+                        links: blk.links
                     ))
                     curIdx += 1
                 }
@@ -499,6 +530,38 @@ public final class DocumentTextLayout: @unchecked Sendable {
     }
 
     // MARK: - 命中测试 (Hit Testing)
+
+    /// 检测文档坐标点是否落在某个文本超链接区间内
+    public func link(at docPoint: CGPoint) -> String? {
+        guard !blocks.isEmpty else { return nil }
+        for block in blocks where !block.links.isEmpty {
+            let inv = block.transform.inverted()
+            let localPoint = docPoint.applying(inv)
+            for line in block.lines {
+                if line.rect.insetBy(dx: -2, dy: -2).contains(localPoint) {
+                    let relX = localPoint.x - line.lineX
+                    let cfIdx = CTLineGetStringIndexForPosition(line.ctLine, CGPoint(x: max(0, relX), y: 0))
+                    guard cfIdx != kCFNotFound else { continue }
+                    let globalIdx = line.paraBaseOffset + cfIdx
+                    for span in block.links {
+                        if globalIdx >= span.range.location && globalIdx < span.range.location + span.range.length {
+                            return span.target
+                        }
+                    }
+                    // 允许光标正好落在区间末尾字符右半侧时命中该超链接
+                    if globalIdx > 0 {
+                        let prevIdx = globalIdx - 1
+                        for span in block.links {
+                            if prevIdx >= span.range.location && prevIdx < span.range.location + span.range.length {
+                                return span.target
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return nil
+    }
 
     /// 将文档全局坐标点转换为最贴近的文本字符位置
     public func hitTest(docPoint: CGPoint) -> TextPosition? {

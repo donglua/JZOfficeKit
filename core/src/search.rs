@@ -626,6 +626,7 @@ mod tests {
                 text: "检索文本".to_owned(),
                 style: 0,
                 numeric: false,
+                link: None,
             }],
             merges: Vec::new(),
             elements: Vec::new(),
@@ -651,6 +652,7 @@ mod tests {
                 text: "x".repeat(MAX_CACHED_SEARCH_INDEX_BYTES + 1),
                 style: 0,
                 numeric: false,
+                link: None,
             }],
             merges: Vec::new(),
             elements: Vec::new(),
@@ -686,6 +688,7 @@ mod tests {
                     text: "Target Anchor".to_owned(),
                     style: 0,
                     numeric: false,
+                    link: None,
                 },
                 Cell {
                     row: 0,
@@ -693,6 +696,7 @@ mod tests {
                     text: "Target Covered".to_owned(),
                     style: 0,
                     numeric: false,
+                    link: None,
                 },
                 Cell {
                     row: 1,
@@ -700,6 +704,7 @@ mod tests {
                     text: "Target Hidden Row".to_owned(),
                     style: 0,
                     numeric: false,
+                    link: None,
                 },
                 Cell {
                     row: 2,
@@ -707,6 +712,7 @@ mod tests {
                     text: "Target Visible".to_owned(),
                     style: 0,
                     numeric: false,
+                    link: None,
                 },
             ],
             merges: vec![CellRange {

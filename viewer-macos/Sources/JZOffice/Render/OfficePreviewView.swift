@@ -26,7 +26,10 @@ public final class OfficePreviewController: ObservableObject {
     @Published public internal(set) var zoom: CGFloat = 1.0
     @Published public internal(set) var metadata: OfficeMetadata?
     @Published public internal(set) var outline: [OfficeOutlineItem] = []
+    @Published public internal(set) var hoveredLink: String? = nil
     @Published public internal(set) var imageLoader: OfficeImageLoader?
+    /// 外部链接点击回调；未设置时默认校验 `http/https/mailto` 后调用 `NSWorkspace.shared.open`
+    public var onLinkClick: ((String) -> Void)? = nil
     @Published internal var imageVersion: UInt = 0
 
     @Published internal var document: OfficeDocument? {
@@ -126,6 +129,38 @@ public final class OfficePreviewController: ObservableObject {
     /// 跳转到 DOCX 正文指定块索引（0-based，对应 `outline[i].blockIndex`）
     public func jumpToBlock(_ blockIndex: Int) {
         canvasView?.scrollToBlock(blockIndex)
+    }
+
+    /// 安全处理超链接目标：内部 `#slide:` / `#block:` / `#sheet:` 直接跳转，外部白名单 URL 透传回调或交由系统打开
+    public func openLink(_ target: String) {
+        let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if let slideStr = trimmed.hasPrefix("#slide:") ? String(trimmed.dropFirst(7)) : nil, let slideNum = Int(slideStr) {
+            jumpToPage(slideNum)
+            return
+        }
+        if let blockStr = trimmed.hasPrefix("#block:") ? String(trimmed.dropFirst(7)) : nil, let blockIdx = Int(blockStr) {
+            jumpToBlock(blockIdx)
+            return
+        }
+        if trimmed.hasPrefix("#sheet:") {
+            let sheetLoc = String(trimmed.dropFirst(7))
+            let rawSheet = sheetLoc.split(separator: "!", maxSplits: 1).first.map(String.init) ?? sheetLoc
+            let normalized = rawSheet.trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
+            if let idx = sheetNames.firstIndex(where: { $0.caseInsensitiveCompare(normalized) == .orderedSame }) {
+                selectSheet(idx + 1)
+            }
+            return
+        }
+        let lower = trimmed.lowercased()
+        guard lower.hasPrefix("https://") || lower.hasPrefix("http://") || lower.hasPrefix("mailto:") else {
+            return
+        }
+        if let onLinkClick {
+            onLinkClick(trimmed)
+        } else if let url = URL(string: trimmed) {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     public func onPageScrollDetected(page: Int) {
@@ -508,6 +543,7 @@ public struct OfficePreviewView: View {
         controller.document = nil
         controller.metadata = nil
         controller.outline = []
+        controller.hoveredLink = nil
         controller.imageCache = [:]
         controller.currentFilePath = url.path
         controller.clearSearch()
@@ -651,6 +687,9 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     private var lastScrolledMatchIndex: Int = -1
     private var textLayout: DocumentTextLayout?
     private var selection: TextSelection?
+    /// 按下时窗口坐标，用于在 mouseUp 区分单击打开链接与拖拽框选
+    private var mouseDownWindowPoint: NSPoint?
+    private var hoverTrackingArea: NSTrackingArea?
     /// XLSX 二维网格选区（与 DOCX/PPTX 的 `selection` 互斥：同一时刻只有一种文档类型生效）
     internal var sheetSelection: SheetSelectionModel.SheetSelection?
     /// XLSX 拖拽锚点：按下时固定，拖拽期间焦点跟随鼠标，松手后清空
@@ -1440,6 +1479,7 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        mouseDownWindowPoint = event.locationInWindow
         // XLSX 只做单元格点选，不构建文本索引（表格不参与自由划词）；
         // 点在标头或表格外时回落系统行为，同时清掉旧选区
         if document?.kind == .xlsx {
@@ -1509,15 +1549,32 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
     }
 
     override func mouseUp(with event: NSEvent) {
+        let isCleanSingleClick: Bool
+        if let down = mouseDownWindowPoint, event.clickCount == 1 {
+            let dx = event.locationInWindow.x - down.x
+            let dy = event.locationInWindow.y - down.y
+            isCleanSingleClick = (dx * dx + dy * dy) <= 16
+        } else {
+            isCleanSingleClick = false
+        }
+        mouseDownWindowPoint = nil
+        let viewPoint = convert(event.locationInWindow, from: nil)
+
         // XLSX：松手结束拖拽，锚点保留在选区里（后续再按下会重新取锚点）
         if document?.kind == .xlsx {
             sheetDragAnchor = nil
+            if isCleanSingleClick, let target = linkTarget(atViewPoint: viewPoint) {
+                controllerRef?.openLink(target)
+            }
             super.mouseUp(with: event)
             return
         }
         if let sel = selection, sel.isEmpty {
             selection = nil
             needsDisplay = true
+        }
+        if isCleanSingleClick && selection == nil, let target = linkTarget(atViewPoint: viewPoint) {
+            controllerRef?.openLink(target)
         }
         super.mouseUp(with: event)
     }

@@ -83,6 +83,7 @@ pub(crate) fn parse(
     }
     inspect(body, &mut document);
     let relationships = package.relationships(main_part)?;
+    let external_relationships = package.external_relationships(main_part)?;
     let mut styles = Styles::load(package, main_part, &mut document)?;
     let line_pitch = sections
         .iter()
@@ -104,6 +105,7 @@ pub(crate) fn parse(
         package,
         document,
         relationships,
+        external_relationships,
         styles,
         numbering,
         footnotes,
@@ -118,9 +120,12 @@ pub(crate) fn parse(
         budget: scope.block_budget(),
         collect_outline: true,
         last_outline_level: None,
+        active_link: None,
+        bookmarks: HashMap::new(),
     };
     parser.body(body)?;
     parser.collect_outline = false;
+    resolve_docx_bookmarks(&mut parser.document.blocks, &parser.bookmarks);
     parser.parse_notes()?;
     // 解析页眉页脚（在正文之后，避免影响正文的 blocks 计数）。
     // 多节文档中页眉页脚引用按节继承，使用按文档顺序收集的全部 sectPr。
@@ -134,6 +139,7 @@ struct Parser<'a> {
     package: &'a mut Package,
     document: Document,
     relationships: HashMap<String, String>,
+    pub(super) external_relationships: HashMap<String, String>,
     styles: Styles,
     pub(super) numbering: Numbering,
     footnotes: NoteCollection,
@@ -150,6 +156,8 @@ struct Parser<'a> {
     /// 仅在解析正文流时收集大纲目录（排除页眉/页脚/脚注与文本框）
     collect_outline: bool,
     pub(super) last_outline_level: Option<u8>,
+    pub(super) active_link: Option<String>,
+    pub(super) bookmarks: HashMap<String, usize>,
 }
 
 impl Parser<'_> {
@@ -503,6 +511,37 @@ fn push_outline_item(
         level,
         block_index,
     });
+}
+
+fn resolve_docx_bookmarks(blocks: &mut [Element], bookmarks: &HashMap<String, usize>) {
+    let resolve_link = |link: &mut Option<String>| {
+        if let Some(target) = link.as_deref() {
+            if let Some(name) = target.strip_prefix("#bookmark:") {
+                if let Some(&idx) = bookmarks.get(name) {
+                    *link = Some(format!("#block:{idx}"));
+                } else {
+                    *link = None;
+                }
+            }
+        }
+    };
+    for block in blocks {
+        resolve_link(&mut block.link);
+        for p in &mut block.paragraphs {
+            for run in &mut p.runs {
+                resolve_link(&mut run.link);
+            }
+        }
+        for row in &mut block.rows {
+            for cell in row {
+                for p in cell {
+                    for run in &mut p.runs {
+                        resolve_link(&mut run.link);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn has_unhandled_vml(node: &Node) -> bool {

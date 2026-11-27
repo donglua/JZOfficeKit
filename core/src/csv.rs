@@ -459,6 +459,7 @@ fn build_sheet(
                 text,
                 style,
                 numeric,
+                link: None,
             });
         }
 

@@ -1918,6 +1918,8 @@ impl ChartPaint<'_> {
         TextStyle {
             theme: self.theme,
             doc: self.doc,
+            part: None,
+            slide_pages: None,
         }
         .run(&mut run, properties);
         run
@@ -2062,6 +2064,8 @@ impl ChartPaint<'_> {
         let mut text_style = TextStyle {
             theme: self.theme,
             doc: self.doc,
+            part: None,
+            slide_pages: None,
         };
         for layer in cfg.style_layers.into_iter().flatten() {
             if let Some(props) = layer.child("txPr").and_then(|n| n.descendant("defRPr")) {

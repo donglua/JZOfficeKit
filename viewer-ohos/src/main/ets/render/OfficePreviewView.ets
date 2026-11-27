@@ -412,6 +412,7 @@ export interface OfficePreviewActions {
   getSheetNames: () => string[];
   getOutline: () => model.OutlineItem[];
   scrollToBlock: (blockIndex: number) => void;
+  openLink: (target: string) => boolean;
   getZoom: () => number;
   setZoom: (value: number) => void;
   resetZoom: () => void;
@@ -539,6 +540,10 @@ export class OfficePreviewController {
     this.actions?.scrollToBlock(blockIndex);
   }
 
+  public openLink(target: string): boolean {
+    return this.actions ? this.actions.openLink(target) : false;
+  }
+
   public getZoom(): number {
     return this.actions ? this.actions.getZoom() : 1.0;
   }
@@ -644,6 +649,7 @@ export struct OfficePreviewView {
   onLoaded?: (info: OfficePreviewInfo) => void;
   onError?: (error: Error) => void;
   onPageChange?: (pageNumber: number, pageCount: number) => void;
+  onLinkClick?: (target: string) => void;
 
   private rawDocument: model.OfficeDocument | null = null;
   /**
@@ -699,6 +705,58 @@ export struct OfficePreviewView {
           endChar: 0,
           snippet: ''
         });
+      },
+      openLink: (target: string): boolean => {
+        const trimmed = target.trim();
+        if (!trimmed) return false;
+        if (trimmed.startsWith('#slide:')) {
+          const slide = Number.parseInt(trimmed.substring(7), 10);
+          if (!Number.isNaN(slide) && this.childJumpToPage) {
+            this.childJumpToPage(slide);
+            return true;
+          }
+          return false;
+        }
+        if (trimmed.startsWith('#block:')) {
+          const blockIdx = Number.parseInt(trimmed.substring(7), 10);
+          if (!Number.isNaN(blockIdx) && this.rawDocument?.kind === 'DOCX' && this.childScrollToMatch) {
+            const headerCount = this.rawDocument.headerBlocks?.length ?? 0;
+            this.childScrollToMatch({
+              pageIndex: 0,
+              elementIndex: headerCount + blockIdx,
+              paragraphIndex: 0,
+              startChar: 0,
+              endChar: 0,
+              snippet: ''
+            });
+            return true;
+          }
+          return false;
+        }
+        if (trimmed.startsWith('#sheet:') && this.rawDocument?.kind === 'XLSX') {
+          const loc = trimmed.substring(7);
+          const bang = loc.indexOf('!');
+          let sheetName = (bang >= 0 ? loc.substring(0, bang) : loc).trim();
+          if (sheetName.length >= 2 && ((sheetName.startsWith("'") && sheetName.endsWith("'")) ||
+            (sheetName.startsWith('"') && sheetName.endsWith('"')))) {
+            sheetName = sheetName.substring(1, sheetName.length - 1);
+          }
+          const idx = this.rawDocument.sheets.findIndex((s) => s.name.toLowerCase() === sheetName.toLowerCase());
+          if (idx >= 0 && this.childSelectSheet) {
+            this.childSelectSheet(idx + 1);
+            return true;
+          }
+          return false;
+        }
+        const lower = trimmed.toLowerCase();
+        if (!lower.startsWith('https://') && !lower.startsWith('http://') && !lower.startsWith('mailto:')) {
+          return false;
+        }
+        if (this.onLinkClick) {
+          this.onLinkClick(trimmed);
+          return true;
+        }
+        return false;
       },
       getZoom: (): number => (this.childGetZoom ? this.childGetZoom() : 1.0),
       setZoom: (value: number): void => {

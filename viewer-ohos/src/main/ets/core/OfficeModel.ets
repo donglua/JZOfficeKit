@@ -46,6 +46,8 @@ export interface Run {
   weight?: number;
   color: number;
   background?: number;
+  /** 文本段超链接目标 */
+  link?: string;
 }
 
 export interface Paragraph {
@@ -98,6 +100,8 @@ export interface Element {
   distBottom?: number;
   distLeft?: number;
   distRight?: number;
+  /** 元素级超链接目标 */
+  link?: string;
   paragraphs?: Paragraph[];
   rows?: Paragraph[][][];
   columnWidths?: number[];
@@ -155,6 +159,7 @@ export interface Cell {
   text: string;
   style: number;
   numeric: boolean;
+  link?: string;
 }
 
 export interface Sheet {

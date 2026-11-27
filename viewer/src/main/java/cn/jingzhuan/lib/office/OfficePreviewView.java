@@ -117,6 +117,11 @@ public final class OfficePreviewView extends View {
         void onError(Exception error);
     }
 
+    /** 超链接点击回调：内部跳转（`#slide:` / `#block:` / `#sheet:`）由组件内置处理，外部白名单 URL 交由宿主打开 */
+    public interface OnLinkClickListener {
+        void onLinkClick(String target);
+    }
+
     public static final class SearchMatch {
         public final int pageIndex;
         public final int elementIndex;
@@ -196,6 +201,7 @@ public final class OfficePreviewView extends View {
     private final Set<String> wantedImages = new LinkedHashSet<>();
     private OnPageChangeListener pageListener;
     private final List<OnPageChangeListener> pageListeners = new ArrayList<>();
+    private OnLinkClickListener linkClickListener;
     private int currentPage, notifiedPage, notifiedCount, pendingJumpPage, announcedPage;
     private boolean hasRestoredState;
     private int restoredPage;
@@ -1918,6 +1924,63 @@ public final class OfficePreviewView extends View {
         }
         invalidate();
         notifySearchMatchChanged();
+    }
+
+    /** 设置外部超链接点击监听；内部跳转由预览组件直接执行 */
+    public void setOnLinkClickListener(OnLinkClickListener listener) {
+        this.linkClickListener = listener;
+    }
+
+    /** 处理超链接目标：内部 `#slide:` / `#block:` / `#sheet:` 直接跳转，外部白名单 URL 回调宿主 */
+    public boolean openLink(String target) {
+        if (target == null) return false;
+        String trimmed = target.trim();
+        if (trimmed.isEmpty()) return false;
+        if (trimmed.startsWith("#slide:")) {
+            try {
+                int page = Integer.parseInt(trimmed.substring(7));
+                jumpToPage(page);
+                return true;
+            } catch (NumberFormatException ignored) {
+                return false;
+            }
+        }
+        if (trimmed.startsWith("#block:")) {
+            try {
+                int blockIdx = Integer.parseInt(trimmed.substring(7));
+                scrollToBlock(blockIdx);
+                return true;
+            } catch (NumberFormatException ignored) {
+                return false;
+            }
+        }
+        if (trimmed.startsWith("#sheet:")) {
+            String loc = trimmed.substring(7);
+            int bang = loc.indexOf('!');
+            String sheetName = (bang >= 0 ? loc.substring(0, bang) : loc).trim();
+            if (sheetName.length() >= 2 && ((sheetName.startsWith("'") && sheetName.endsWith("'"))
+                || (sheetName.startsWith("\"") && sheetName.endsWith("\"")))) {
+                sheetName = sheetName.substring(1, sheetName.length() - 1);
+            }
+            if (document != null && document.kind == OfficeDocument.Kind.XLSX) {
+                for (int i = 0; i < document.sheets.size(); i++) {
+                    if (document.sheets.get(i).name.equalsIgnoreCase(sheetName)) {
+                        selectSheet(i + 1);
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+        String lower = trimmed.toLowerCase(java.util.Locale.ROOT);
+        if (!lower.startsWith("https://") && !lower.startsWith("http://") && !lower.startsWith("mailto:")) {
+            return false;
+        }
+        if (linkClickListener != null) {
+            linkClickListener.onLinkClick(trimmed);
+            return true;
+        }
+        return false;
     }
 
     /** 返回当前 DOCX 文档的大纲目录列表；无大纲或非 DOCX 时返回空列表 */

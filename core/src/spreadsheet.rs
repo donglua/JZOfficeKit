@@ -180,6 +180,9 @@ pub struct Cell {
     pub text: String,
     pub style: u32,
     pub numeric: bool,
+    /// 单元格超链接目标（外部白名单 URL 或 `#sheet:` 内部跳转），为空时不序列化
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]

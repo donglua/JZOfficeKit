@@ -401,6 +401,10 @@ final class DocumentDecoder {
                 case "style": cell.style = nonNegativeInt(c.nextDouble(), "style"); hasStyle = true; break;
                 case "text": cell.text = c.nextString(); hasText = true; break;
                 case "numeric": cell.numeric = c.nextBoolean(); hasNum = true; break;
+                case "link":
+                    if (c.peekNull()) { c.nextNull(); cell.link = null; }
+                    else cell.link = c.nextString();
+                    break;
                 default: c.skipValue(); break;
             }
         }
@@ -784,6 +788,10 @@ final class DocumentDecoder {
                 case "image":
                     if (c.peekNull()) { c.nextNull(); e.image = null; }
                     else e.image = c.nextString();
+                    break;
+                case "link":
+                    if (c.peekNull()) { c.nextNull(); e.link = null; }
+                    else e.link = c.nextString();
                     break;
                 case "paragraphs":
                     if (c.peekNull()) c.nextNull();
@@ -1252,6 +1260,10 @@ final class DocumentDecoder {
                 case "strike": r.strike = c.nextBoolean(); break;
                 case "vertAlign": r.vertAlign = vertAlign(c, "run"); break;
                 case "background": r.background = (int) c.nextLong(); break;
+                case "link":
+                    if (c.peekNull()) { c.nextNull(); r.link = null; }
+                    else r.link = c.nextString();
+                    break;
                 case "spacing": {
                     double spc = c.nextDouble();
                     if (!Double.isFinite(spc) || spc < -100.0 || spc > 400.0) {

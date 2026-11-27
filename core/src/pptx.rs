@@ -6,7 +6,7 @@ pub(crate) mod geometry;
 mod gradient;
 mod inheritance;
 mod numbering;
-mod parts;
+pub(crate) mod parts;
 mod path;
 mod preset_geometry;
 pub(crate) mod render;
@@ -86,6 +86,12 @@ pub(crate) fn parse(pkg: &mut Package, main_part: &str, scope: crate::Scope) -> 
     let default_theme = cache.related(pkg, Some(&presentation), "theme")?;
     // ppt/tableStyles.xml 为整份演示文稿共享的表样式定义库
     let table_styles = cache.related(pkg, Some(&presentation), "tableStyles")?;
+    let mut slide_pages = std::collections::HashMap::new();
+    for (idx, id) in ids.named("sldId").enumerate() {
+        if let Some(path) = presentation.rels.get(relation_id(id, "id")) {
+            slide_pages.insert(path.clone(), idx + 1);
+        }
+    }
     let mut budget = Budget::default();
     // 首屏范围只渲染首张幻灯片：封面只需要第一页，其余页的渲染结果会被丢弃
     let limit = if scope == crate::Scope::FirstViewport {
@@ -132,6 +138,7 @@ pub(crate) fn parse(pkg: &mut Package, main_part: &str, scope: crate::Scope) -> 
             master: master_root,
             background_gradient: None,
             table_styles: table_styles.as_deref(),
+            slide_pages: &slide_pages,
         };
         renderer.background(
             &mut page,

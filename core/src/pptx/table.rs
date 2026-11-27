@@ -149,7 +149,7 @@ impl Render<'_> {
                     Some(body) => {
                         let override_run =
                             self.cell_run_override(&resolved, cell_row, cell_col, body);
-                        self.paragraphs_with_override(body, &[], &override_run)?
+                        self.paragraphs_with_override(part, body, &[], &override_run)?
                     }
                     None => Vec::new(),
                 };

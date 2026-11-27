@@ -106,6 +106,21 @@ impl Package {
         Ok(result)
     }
 
+    /// 读取 `TargetMode="External"` 的外部关系（超链接），仅放行 `http://`、`https://`、`mailto:` 白名单协议。
+    pub fn external_relationships(&mut self, source: &str) -> Result<HashMap<String, String>> {
+        let mut result = HashMap::new();
+        if let Some(root) = self.relation_nodes(source)? {
+            for node in root.named("Relationship") {
+                if node.attr("TargetMode").eq_ignore_ascii_case("External") {
+                    if let Some(url) = sanitize_external_url(node.attr("Target")) {
+                        result.insert(node.attr("Id").to_owned(), url);
+                    }
+                }
+            }
+        }
+        Ok(result)
+    }
+
     pub fn related_by_type(&mut self, source: &str, kind: &str) -> Result<Option<String>> {
         let suffix = format!("/{kind}");
         if let Some(root) = self.relation_nodes(source)? {
@@ -168,4 +183,26 @@ fn resolve(source: &str, target: &str) -> Result<String> {
         return Err(Error::Invalid("Empty package target"));
     }
     Ok(parts.join("/"))
+}
+
+const MAX_EXTERNAL_URL_BYTES: usize = 2048;
+
+/// 外部超链接安全白名单校验：仅允许 `http://`、`https://`、`mailto:`，拦截控制字符与超长 URL。
+pub(crate) fn sanitize_external_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > MAX_EXTERNAL_URL_BYTES
+        || trimmed.bytes().any(|b| b < 0x20 || b == 0x7f)
+    {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let rest = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+        .or_else(|| lower.strip_prefix("mailto:"))?;
+    if rest.trim().is_empty() {
+        return None;
+    }
+    Some(trimmed.to_owned())
 }

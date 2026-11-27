@@ -44,6 +44,7 @@ final class SpreadsheetDocument {
         int row, column, style;
         String text = "";
         boolean numeric;
+        String link;
 
         String previewText() {
             if (text.length() <= MAX_PREVIEW_LENGTH) return text;

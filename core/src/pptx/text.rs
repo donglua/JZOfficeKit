@@ -26,6 +26,8 @@ pub(super) struct Text<'a> {
     pub defaults: Option<&'a Node>,
     pub master: Option<&'a Node>,
     pub chain: &'a [&'a Node],
+    pub part: Option<&'a super::parts::Part>,
+    pub slide_pages: Option<&'a std::collections::HashMap<String, usize>>,
 }
 
 impl Text<'_> {
@@ -38,6 +40,8 @@ impl Text<'_> {
             self.theme,
             18.0,
             None,
+            self.part,
+            self.slide_pages,
             self.doc,
             &mut |bytes| self.budget.text(bytes),
         )
@@ -60,6 +64,8 @@ impl Text<'_> {
             self.theme,
             18.0,
             Some(override_run),
+            self.part,
+            self.slide_pages,
             self.doc,
             &mut |bytes| self.budget.text(bytes),
         )
@@ -86,6 +92,8 @@ pub(crate) fn read_drawing_paragraphs(
         theme,
         default_font_size,
         None,
+        None,
+        None,
         doc,
         add_text_bytes,
     )
@@ -100,6 +108,8 @@ fn read_paragraphs_inner(
     theme: &Theme,
     default_font_size: f32,
     override_run: Option<&RunOverride>,
+    part: Option<&super::parts::Part>,
+    slide_pages: Option<&std::collections::HashMap<String, usize>>,
     doc: &mut Document,
     add_text_bytes: &mut impl FnMut(usize) -> Result<()>,
 ) -> Result<Vec<Paragraph>> {
@@ -153,7 +163,12 @@ fn read_paragraphs_inner(
             ..Paragraph::default()
         };
         let mut bullet = None;
-        let mut styles = TextStyle { doc, theme };
+        let mut styles = TextStyle {
+            doc,
+            theme,
+            part,
+            slide_pages,
+        };
         let mut applied_override = false;
         for (index, properties) in defaults.into_iter().enumerate() {
             if index == master_count {

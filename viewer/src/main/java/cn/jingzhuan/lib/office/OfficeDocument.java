@@ -71,6 +71,7 @@ final class OfficeDocument {
         final List<SpreadsheetDocument.CellRange> merges = new ArrayList<>();
         final List<Path> paths = new ArrayList<>();
         GradientFill fillGradient;
+        String link;
     }
 
     /** 单元格单边边框：color 为 ARGB 颜色，width 为线宽（pt，0 表示不绘制） */
@@ -113,6 +114,7 @@ final class OfficeDocument {
         Float imageWidth;
         Float imageHeight;
         int background;
+        String link;
         int borderTop, borderBottom, borderLeft, borderRight;
         float borderWidth;
     }
@@ -134,7 +136,7 @@ final class OfficeDocument {
             r.text = text; r.fontFace = fontFace; r.size = size; r.bold = bold;
             r.italic = italic; r.underline = underline; r.color = color;
             r.strike = strike; r.vertAlign = vertAlign; r.spacing = spacing; r.weight = weight;
-            r.background = background;
+            r.background = background; r.link = link;
             return r;
         }
     }

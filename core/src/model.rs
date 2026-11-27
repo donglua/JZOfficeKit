@@ -385,6 +385,9 @@ pub struct Element {
     pub dist_left: f32,
     #[serde(skip_serializing_if = "is_zero_f32")]
     pub dist_right: f32,
+    /// 元素级超链接目标（外部白名单 URL 或 `#slide:` / `#block:` / `#sheet:` 内部跳转）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 impl Default for Element {
@@ -427,6 +430,7 @@ impl Default for Element {
             dist_bottom: 0.0,
             dist_left: 0.0,
             dist_right: 0.0,
+            link: None,
         }
     }
 }
@@ -511,6 +515,9 @@ pub struct Run {
     pub color: u32,
     #[serde(skip_serializing_if = "is_zero_u32")]
     pub background: u32,
+    /// 文本段超链接目标（外部白名单 URL 或内部跳转标识）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 impl Default for Run {
@@ -528,6 +535,7 @@ impl Default for Run {
             weight: 0,
             color: 0xff202124,
             background: 0,
+            link: None,
         }
     }
 }

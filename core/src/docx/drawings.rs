@@ -114,14 +114,32 @@ impl Parser<'_> {
 
         let (width, height) = self.container_extent(container, wgp, wsp);
         let layout = self.anchor_layout(container, width, height);
+        let container_link = container
+            .child("docPr")
+            .and_then(|n| n.child("hlinkClick"))
+            .and_then(|hl| {
+                let rid = crate::pptx::relation_id(hl, "id");
+                self.external_relationships.get(rid).cloned()
+            })
+            .or_else(|| self.active_link.clone());
 
         if let Some(group) = wgp {
             let mut group_elements = Vec::new();
             self.parse_wpg_children(group, [0.0, 0.0, width, height], 0, &mut group_elements)?;
+            if let Some(link) = &container_link {
+                for item in &mut group_elements {
+                    if item.link.is_none() {
+                        item.link = Some(link.clone());
+                    }
+                }
+            }
             self.push_group_elements(group_elements, layout, height, out)?;
         } else if let Some(shape) = wsp {
             if let Some(mut element) = self.parse_wsp(shape, width, height)? {
                 layout.apply(&mut element);
+                if element.link.is_none() {
+                    element.link = container_link;
+                }
                 self.push_drawing_element(element, out)?;
             }
         } else if let Some(chart) = chart_ref {
@@ -134,6 +152,9 @@ impl Parser<'_> {
             let src_rect = container.descendant("srcRect");
             if let Some(mut element) = self.resolve_image_element(blip, src_rect, width, height) {
                 layout.apply(&mut element);
+                if element.link.is_none() {
+                    element.link = container_link;
+                }
                 self.push_drawing_element(element, out)?;
             }
         }

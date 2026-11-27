@@ -9,6 +9,34 @@ use crate::xml::{number, Node};
 pub(crate) struct TextStyle<'a> {
     pub doc: &'a mut Document,
     pub theme: &'a Theme,
+    pub part: Option<&'a super::parts::Part>,
+    pub slide_pages: Option<&'a std::collections::HashMap<String, usize>>,
+}
+
+pub(super) fn resolve_pptx_hlink(
+    hlink: &Node,
+    part: &super::parts::Part,
+    slide_pages: &std::collections::HashMap<String, usize>,
+) -> Option<String> {
+    let action = hlink.attr("action");
+    let rid = super::relation_id(hlink, "id");
+    if action.eq_ignore_ascii_case("ppaction://hlinkshowjump?jump=firstslide") {
+        return (!slide_pages.is_empty()).then(|| "#slide:1".to_owned());
+    }
+    if action.eq_ignore_ascii_case("ppaction://hlinkshowjump?jump=lastslide") {
+        return (!slide_pages.is_empty()).then(|| format!("#slide:{}", slide_pages.len()));
+    }
+    if !rid.is_empty() {
+        if let Some(target_part) = part.rels.get(rid) {
+            if let Some(&page) = slide_pages.get(target_part) {
+                return Some(format!("#slide:{page}"));
+            }
+        }
+        if let Some(url) = part.external_rels.get(rid) {
+            return Some(url.clone());
+        }
+    }
+    None
 }
 
 impl TextStyle<'_> {
@@ -78,8 +106,17 @@ impl TextStyle<'_> {
         if let Some(hl) = properties.child("highlight") {
             run.background = self.theme.color(hl, run.background, self.doc);
         }
-        if properties.child("hlinkClick").is_some() || properties.child("hlinkMouseOver").is_some()
-        {
+        if let Some(hlink) = properties.child("hlinkClick") {
+            let resolved = self
+                .part
+                .zip(self.slide_pages)
+                .and_then(|(part, pages)| resolve_pptx_hlink(hlink, part, pages));
+            if let Some(link) = resolved {
+                run.link = Some(link);
+            } else {
+                self.doc.warn("PPTX text hyperlinks are not interactive.");
+            }
+        } else if properties.child("hlinkMouseOver").is_some() {
             self.doc.warn("PPTX text hyperlinks are not interactive.");
         }
     }

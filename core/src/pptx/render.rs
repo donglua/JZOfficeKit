@@ -21,6 +21,8 @@ pub(super) struct Render<'a> {
     pub background_gradient: Option<GradientFill>,
     /// 包级 `ppt/tableStyles.xml`；`None` 表示该包没有表样式定义库。
     pub table_styles: Option<&'a Part>,
+    /// 幻灯片部件路径到 1-based 页码的映射，供内部跳转超链接（`hlinksldjump`）解析。
+    pub slide_pages: &'a std::collections::HashMap<String, usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -189,6 +191,10 @@ impl Render<'_> {
                             fill
                         });
                     }
+                    let shape_link = shape_hyperlink(shape, scope.part, self.slide_pages);
+                    if shape_link.is_some() {
+                        element.link = shape_link.clone();
+                    }
                     if supported
                         && (element.fill != 0
                             || element.fill_gradient.is_some()
@@ -204,7 +210,10 @@ impl Render<'_> {
                             .and_then(|b| b.in_slide_units(scope.transform))
                             .unwrap_or((bounds, transform));
                         if let Some(mut text) = tx_bounds.text_element(&chain, self.doc) {
-                            text.paragraphs = self.paragraphs(body, &chain)?;
+                            text.paragraphs = self.paragraphs(scope.part, body, &chain)?;
+                            if text.link.is_none() {
+                                text.link = shape_link;
+                            }
                             if !text.paragraphs.is_empty() {
                                 self.emit(page, text, tx_transform)?;
                             }
@@ -255,10 +264,16 @@ impl Render<'_> {
                 .line_only(shape, &mut element);
             }
         }
+        element.link = shape_hyperlink(shape, part, self.slide_pages);
         Some(element)
     }
 
-    pub fn paragraphs(&mut self, body: &Node, chain: &[&Node]) -> Result<Vec<Paragraph>> {
+    pub fn paragraphs(
+        &mut self,
+        part: &Part,
+        body: &Node,
+        chain: &[&Node],
+    ) -> Result<Vec<Paragraph>> {
         Text {
             doc: self.doc,
             theme: self.theme,
@@ -266,6 +281,8 @@ impl Render<'_> {
             defaults: self.defaults,
             master: self.master,
             chain,
+            part: Some(part),
+            slide_pages: Some(self.slide_pages),
         }
         .read(body)
     }
@@ -273,6 +290,7 @@ impl Render<'_> {
     /// 以调用方给定的 `tcTxStyle` 覆盖项读取段落，供 PPTX 表格注入表头样式。
     pub(super) fn paragraphs_with_override(
         &mut self,
+        part: &Part,
         body: &Node,
         chain: &[&Node],
         override_run: &RunOverride,
@@ -284,6 +302,8 @@ impl Render<'_> {
             defaults: self.defaults,
             master: self.master,
             chain,
+            part: Some(part),
+            slide_pages: Some(self.slide_pages),
         }
         .read_with_override(body, override_run)
     }
@@ -373,4 +393,19 @@ fn parse_crop_percent(value: &str) -> Option<f32> {
         value.parse::<f32>().ok()? / 100_000.0
     };
     parsed.is_finite().then_some(parsed)
+}
+
+/// 解析形状或图片 `nv*Pr/cNvPr/hlinkClick` 上的超链接目标。
+fn shape_hyperlink(
+    shape: &Node,
+    part: &Part,
+    slide_pages: &std::collections::HashMap<String, usize>,
+) -> Option<String> {
+    let hlink = shape
+        .children
+        .iter()
+        .find(|n| n.name.starts_with("nv"))
+        .and_then(|nv| nv.child("cNvPr"))
+        .and_then(|c| c.child("hlinkClick"))?;
+    super::text_style::resolve_pptx_hlink(hlink, part, slide_pages)
 }

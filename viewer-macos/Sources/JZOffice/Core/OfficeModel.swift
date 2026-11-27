@@ -99,6 +99,7 @@ public struct OfficeRun: Codable, Sendable {
     public let spacing: CGFloat
     public let weight: Int
     public let background: UInt32
+    public let link: String?
 
     public init(
         text: String,
@@ -112,7 +113,8 @@ public struct OfficeRun: Codable, Sendable {
         vertAlign: String = "",
         spacing: CGFloat = 0,
         weight: Int = 0,
-        background: UInt32 = 0
+        background: UInt32 = 0,
+        link: String? = nil
     ) {
         self.text = text
         self.fontFace = fontFace
@@ -126,11 +128,12 @@ public struct OfficeRun: Codable, Sendable {
         self.spacing = spacing
         self.weight = weight
         self.background = background
+        self.link = link
     }
 
     enum CodingKeys: String, CodingKey {
         case text, fontFace, size, bold, italic, underline, color
-        case strike, vertAlign, spacing, weight, background
+        case strike, vertAlign, spacing, weight, background, link
     }
 
     public init(from decoder: Decoder) throws {
@@ -147,6 +150,7 @@ public struct OfficeRun: Codable, Sendable {
         self.spacing = try c.decodeIfPresent(CGFloat.self, forKey: .spacing) ?? 0
         self.weight = try c.decodeIfPresent(Int.self, forKey: .weight) ?? 0
         self.background = try c.decodeIfPresent(UInt32.self, forKey: .background) ?? 0
+        self.link = try c.decodeIfPresent(String.self, forKey: .link)
     }
 }
 
@@ -293,6 +297,7 @@ public struct OfficeElement: Codable, Sendable {
     public var distBottom: CGFloat
     public var distLeft: CGFloat
     public var distRight: CGFloat
+    public var link: String?
 
     enum CodingKeys: String, CodingKey {
         case type, x, y, width, height, transform, padding, fill, stroke, strokeWidth
@@ -300,6 +305,7 @@ public struct OfficeElement: Codable, Sendable {
         case cellValigns, cellBorders, strokeDash
         case rowHeights, cellPaddings
         case wrapMode, horizontalAlign, behindDoc, distTop, distBottom, distLeft, distRight
+        case link
     }
 
     public init(
@@ -335,7 +341,8 @@ public struct OfficeElement: Codable, Sendable {
         distTop: CGFloat = 0,
         distBottom: CGFloat = 0,
         distLeft: CGFloat = 0,
-        distRight: CGFloat = 0
+        distRight: CGFloat = 0,
+        link: String? = nil
     ) {
         self.type = type
         self.x = x
@@ -370,6 +377,7 @@ public struct OfficeElement: Codable, Sendable {
         self.distBottom = distBottom
         self.distLeft = distLeft
         self.distRight = distRight
+        self.link = link
     }
 
     public init(from decoder: Decoder) throws {
@@ -413,6 +421,7 @@ public struct OfficeElement: Codable, Sendable {
         self.distBottom = Self.clampWrapDistance(try c.decodeIfPresent(CGFloat.self, forKey: .distBottom))
         self.distLeft = Self.clampWrapDistance(try c.decodeIfPresent(CGFloat.self, forKey: .distLeft))
         self.distRight = Self.clampWrapDistance(try c.decodeIfPresent(CGFloat.self, forKey: .distRight))
+        self.link = try c.decodeIfPresent(String.self, forKey: .link)
     }
 
     private static func clampWrapDistance(_ value: CGFloat?) -> CGFloat {
@@ -577,17 +586,19 @@ public struct OfficeCell: Codable, Sendable {
     public let text: String
     public let style: Int
     public let numeric: Bool
+    public let link: String?
 
     /// 逐字段构造，供单元测试与离线用例直接拼装工作表。
     ///
     /// 属性全为 `let` 且只有 `Codable` 合成解码路径时，测试只能靠手写 JSON 造数据；
     /// 该初始化器只补齐构造入口，不参与解码，因此对 `Codable` 行为零影响。
-    public init(row: Int = 0, column: Int = 0, text: String = "", style: Int = 0, numeric: Bool = false) {
+    public init(row: Int = 0, column: Int = 0, text: String = "", style: Int = 0, numeric: Bool = false, link: String? = nil) {
         self.row = row
         self.column = column
         self.text = text
         self.style = style
         self.numeric = numeric
+        self.link = link
     }
 }
 

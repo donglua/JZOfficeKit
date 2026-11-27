@@ -132,7 +132,50 @@ impl Parser<'_> {
                     }
                     self.inline(node, &font, flow)?;
                 }
-                "t" => flow.texts(font.runs(&node.text, &mut self.document))?,
+                "t" => {
+                    let mut runs = font.runs(&node.text, &mut self.document);
+                    if let Some(link) = &self.active_link {
+                        for run in &mut runs {
+                            run.link = Some(link.clone());
+                        }
+                    }
+                    flow.texts(runs)?;
+                }
+                "hyperlink" => {
+                    let rid = node.get_attr("r:id").unwrap_or_else(|| node.attr("id"));
+                    let resolved = if !rid.is_empty() {
+                        self.external_relationships.get(rid).cloned()
+                    } else {
+                        let anchor = node.attr("anchor").trim();
+                        if !anchor.is_empty()
+                            && anchor.len() <= 256
+                            && !anchor.bytes().any(|b| b < 0x20 || b == 0x7f)
+                        {
+                            Some(format!("#bookmark:{anchor}"))
+                        } else {
+                            None
+                        }
+                    };
+                    let prev_link = self.active_link.clone();
+                    if resolved.is_some() {
+                        self.active_link = resolved;
+                    }
+                    self.inline(node, font, flow)?;
+                    self.active_link = prev_link;
+                }
+                "bookmarkStart" => {
+                    let name = node.attr("name").trim();
+                    if !flow.in_cell
+                        && !name.is_empty()
+                        && !name.starts_with('_')
+                        && name.len() <= 256
+                        && self.bookmarks.len() < 2000
+                    {
+                        self.bookmarks
+                            .entry(name.to_owned())
+                            .or_insert(self.document.blocks.len());
+                    }
+                }
                 "tab" | "ptab" => flow.text(font.run("\t", &mut self.document))?,
                 "br" | "cr" => {
                     if matches!(node.attr("type"), "page" | "column") {

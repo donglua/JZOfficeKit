@@ -105,8 +105,62 @@ pub(super) fn parse(
                     text: String::new(),
                     style,
                     numeric: false,
+                    link: None,
                 };
                 sheet.cells.push(workbook.cell(node, cell, document)?);
+            }
+        }
+    }
+    if let Some(hyperlinks) = root.child("hyperlinks") {
+        let external_rels = package.external_relationships(source)?;
+        let mut applied = 0_usize;
+        for node in hyperlinks.named("hyperlink") {
+            if applied >= 10_000 {
+                break;
+            }
+            let ref_str = node.attr("ref");
+            let range = if ref_str.contains(':') {
+                coordinates::range(ref_str)
+            } else {
+                coordinates::coordinate(ref_str).map(|(r, c)| crate::model::CellRange {
+                    start_row: r,
+                    start_column: c,
+                    end_row: r,
+                    end_column: c,
+                })
+            };
+            let Ok(range) = range else {
+                continue;
+            };
+            let rid = crate::pptx::relation_id(node, "id");
+            let target = if !rid.is_empty() {
+                external_rels.get(rid).cloned()
+            } else {
+                let loc = node.attr("location").trim();
+                if !loc.is_empty()
+                    && loc.len() <= 256
+                    && !loc.bytes().any(|b| b < 0x20 || b == 0x7f)
+                {
+                    Some(format!("#sheet:{loc}"))
+                } else {
+                    None
+                }
+            };
+            let Some(link) = target else {
+                continue;
+            };
+            for cell in &mut sheet.cells {
+                if cell.row >= range.start_row
+                    && cell.row <= range.end_row
+                    && cell.column >= range.start_column
+                    && cell.column <= range.end_column
+                {
+                    cell.link = Some(link.clone());
+                    applied += 1;
+                    if applied >= 10_000 {
+                        break;
+                    }
+                }
             }
         }
     }

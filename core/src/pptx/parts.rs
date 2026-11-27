@@ -3,10 +3,11 @@ use crate::{Package, Result};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-pub(super) struct Part {
+pub(crate) struct Part {
     pub path: String,
     pub root: Node,
     pub rels: HashMap<String, String>,
+    pub external_rels: HashMap<String, String>,
 }
 
 impl Part {
@@ -15,6 +16,7 @@ impl Part {
             path: path.to_owned(),
             root: pkg.xml(path)?,
             rels: pkg.relationships(path)?,
+            external_rels: pkg.external_relationships(path)?,
         })
     }
 }
