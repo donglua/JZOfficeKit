@@ -283,6 +283,7 @@ export class CanvasElementDrawer {
     const h = element.height;
     const fillStyle = CanvasElementDrawer.resolveFillStyle(ctx, element);
     const strokeCss = RenderUtils.argbToCss(element.stroke);
+    const hasImageMask = element.type === 'IMAGE' && !!element.paths && element.paths.length > 0;
 
     // 2. 绘制 PATH 复杂几何路径
     if (element.type === 'PATH' && element.paths && element.paths.length > 0) {
@@ -321,7 +322,7 @@ export class CanvasElementDrawer {
         }
       }
 
-      if (strokeCss) {
+      if (!hasImageMask && strokeCss) {
         ctx.strokeStyle = strokeCss;
         ctx.lineWidth = Math.max(0.5, element.strokeWidth || 1);
         ctx.setLineDash(CanvasElementDrawer.dashArrayOf(element));
@@ -341,10 +342,13 @@ export class CanvasElementDrawer {
       }
     }
 
-    // 4. 绘制图片 (IMAGE)，裁剪至元素边界以正确呈現 imageBounds 局部裁剪效果
+    // 4. 绘制图片 (IMAGE)，支持非矩形裁剪蒙版与 imageBounds 局部裁剪
     if (element.type === 'IMAGE') {
       ctx.save();
-      if (w > 0 && h > 0) {
+      if (hasImageMask && element.paths) {
+        RenderUtils.tracePaths(ctx, element.paths);
+        ctx.clip();
+      } else if (w > 0 && h > 0) {
         ctx.beginPath();
         ctx.rect(0, 0, w, h);
         ctx.clip();
@@ -362,6 +366,22 @@ export class CanvasElementDrawer {
         ctx.fillRect(0, 0, w, h);
       }
       ctx.restore();
+
+      if (hasImageMask && strokeCss && element.paths) {
+        ctx.strokeStyle = strokeCss;
+        ctx.lineWidth = Math.max(0.5, element.strokeWidth || 1);
+        ctx.setLineDash(CanvasElementDrawer.dashArrayOf(element));
+        for (const p of element.paths) {
+          if (!p.stroke || !p.commands || p.commands.length === 0) continue;
+          let path2d = CanvasElementDrawer.pathCache.get(p);
+          if (!path2d) {
+            path2d = RenderUtils.buildPath2D(p.commands);
+            CanvasElementDrawer.pathCache.set(p, path2d);
+          }
+          ctx.stroke(path2d);
+        }
+        ctx.setLineDash([]);
+      }
     }
 
     // 5. 绘制表格 (TABLE)

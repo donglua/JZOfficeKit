@@ -237,18 +237,24 @@ impl Render<'_> {
             self.doc
                 .warn("PPTX picture tiling and effects are not supported.");
         }
-        if let Some(properties) = shape.child("spPr") {
-            if properties.child("custGeom").is_some()
-                || properties
-                    .child("prstGeom")
-                    .is_some_and(|n| n.attr("prst") != "rect")
-            {
-                self.doc.warn("PPTX picture masks use rectangular bounds.");
-            }
-        }
         let mut element = bounds.element(ElementType::IMAGE);
         element.image = Some(path.clone());
         element.image_crop = image_crop;
+        element.paths = Styles::picture_mask_paths(
+            shape,
+            [element.width, element.height],
+            self.doc,
+            "PPTX picture masks use rectangular bounds.",
+        );
+        if let Some(line) = shape.child("spPr").and_then(|p| p.child("ln")) {
+            if line.child("noFill").is_none() {
+                Styles {
+                    doc: self.doc,
+                    theme: self.theme,
+                }
+                .line_only(shape, &mut element);
+            }
+        }
         Some(element)
     }
 

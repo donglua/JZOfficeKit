@@ -121,6 +121,53 @@ impl Styles<'_> {
         }
     }
 
+    /// 解析图片裁剪蒙版路径（支持 `ellipse`、`roundRect`、26 种 `prstGeom` 及 `custGeom`）。
+    ///
+    /// 矩形或未声明几何返回空序列；遇到不支持的几何形状时保留矩形降级语义并发出告警。
+    pub(crate) fn picture_mask_paths(
+        shape: &Node,
+        size: [f32; 2],
+        doc: &mut Document,
+        unsupported_warning: &'static str,
+    ) -> Vec<Path> {
+        if size[0] <= 0.0 || size[1] <= 0.0 {
+            return Vec::new();
+        }
+        let Some(properties) = shape.child("spPr") else {
+            return Vec::new();
+        };
+        if properties.child("custGeom").is_some() {
+            if let Some(paths) = super::path::parse(properties, size) {
+                return paths;
+            }
+            doc.warn(unsupported_warning);
+            return Vec::new();
+        }
+        let Some(geometry) = properties.child("prstGeom") else {
+            return Vec::new();
+        };
+        match geometry.attr("prst") {
+            "" | "rect" => Vec::new(),
+            "ellipse" => vec![ellipse_mask_path(size)],
+            "roundRect" => match super::round_rect::radius(geometry, size) {
+                Some(r) if r <= 0.0 => Vec::new(),
+                Some(r) => vec![super::round_rect::path(size, r)],
+                None => {
+                    doc.warn(unsupported_warning);
+                    Vec::new()
+                }
+            },
+            _ => {
+                if let Some(path) = super::preset_geometry::path(geometry, size) {
+                    vec![path]
+                } else {
+                    doc.warn(unsupported_warning);
+                    Vec::new()
+                }
+            }
+        }
+    }
+
     fn line_reference(&mut self, element: &mut Element, reference: &Node) {
         let index = reference.attr("idx").parse::<usize>().unwrap_or(0);
         if index == 0 {
@@ -169,6 +216,25 @@ fn dash(node: &Node, stroke_width: f32) -> Vec<f32> {
             vec![8.0 * base, 3.0 * base, base, 3.0 * base, base, 3.0 * base]
         }
         _ => Vec::new(),
+    }
+}
+
+fn ellipse_mask_path([width, height]: [f32; 2]) -> Path {
+    let rx = width / 2.0;
+    let ry = height / 2.0;
+    let kx = rx * 0.552_284_8;
+    let ky = ry * 0.552_284_8;
+    Path {
+        fill: true,
+        stroke: true,
+        commands: vec![
+            PathCommand::Move([rx, 0.0]),
+            PathCommand::Cubic([rx + kx, 0.0, width, ry - ky, width, ry]),
+            PathCommand::Cubic([width, ry + ky, rx + kx, height, rx, height]),
+            PathCommand::Cubic([rx - kx, height, 0.0, ry + ky, 0.0, ry]),
+            PathCommand::Cubic([0.0, ry - ky, rx - kx, 0.0, rx, 0.0]),
+            PathCommand::Close,
+        ],
     }
 }
 

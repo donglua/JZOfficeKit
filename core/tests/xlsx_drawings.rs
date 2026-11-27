@@ -649,3 +649,24 @@ fn group_flip_warns_but_still_renders() -> TestResult {
     assert_eq!(images(&document).len(), 1);
     Ok(())
 }
+
+#[test]
+fn supported_picture_mask_emits_paths_without_rectangular_warning() -> TestResult {
+    let masked = picture(
+        1,
+        "rImg",
+        "",
+        r#"<a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom><a:ln w="12700"><a:solidFill><a:srgbClr val="1A73E8"/></a:solidFill></a:ln>"#,
+        "",
+    );
+    let document = parse(&drawing(&one_cell((1, 1), 1_270_000, 1_270_000, &masked)))?;
+    let found = images(&document);
+    assert_eq!(found.len(), 1);
+    assert!(!found[0].paths.is_empty());
+    assert_eq!(found[0].stroke, BLUE);
+    assert!(!document
+        .warnings
+        .iter()
+        .any(|w| w == "XLSX picture masks use rectangular bounds."));
+    Ok(())
+}

@@ -4162,4 +4162,82 @@ private extension Data {
             UInt8((value >> 24) & 0xff),
         ])
     }
-}
+    @Test("图片圆形裁剪蒙版应保留中心图像并剔除四角像素")
+    func maskedImageClipsCornersInCoreGraphics() throws {
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        // 构造一张 16x16 纯蓝图片
+        let imgW = 16, imgH = 16
+        var imgBytes = [UInt8](repeating: 0, count: imgW * imgH * 4)
+        for i in stride(from: 0, to: imgBytes.count, by: 4) {
+            imgBytes[i] = 0
+            imgBytes[i + 1] = 0
+            imgBytes[i + 2] = 255
+            imgBytes[i + 3] = 255
+        }
+        let imgCtx = try #require(CGContext(
+            data: &imgBytes,
+            width: imgW,
+            height: imgH,
+            bitsPerComponent: 8,
+            bytesPerRow: imgW * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let blueImage = try #require(imgCtx.makeImage())
+
+        let elementJson = """
+        {
+            "type": "IMAGE",
+            "x": 0,
+            "y": 0,
+            "width": 100,
+            "height": 100,
+            "transform": [1, 0, 0, 1, 0, 0],
+            "padding": 0,
+            "fill": 0,
+            "stroke": 4294901760,
+            "strokeWidth": 2,
+            "image": "ppt/media/avatar.png",
+            "verticalAlignment": "TOP",
+            "textWrap": true,
+            "paths": [
+                {
+                    "fill": true,
+                    "stroke": true,
+                    "commands": [
+                        {"op": "MOVE", "points": [50, 0]},
+                        {"op": "CUBIC", "points": [77.614, 0, 100, 22.386, 100, 50]},
+                        {"op": "CUBIC", "points": [100, 77.614, 77.614, 100, 50, 100]},
+                        {"op": "CUBIC", "points": [22.386, 100, 0, 77.614, 0, 50]},
+                        {"op": "CUBIC", "points": [0, 22.386, 22.386, 0, 50, 0]},
+                        {"op": "CLOSE"}
+                    ]
+                }
+            ]
+        }
+        """.data(using: .utf8)!
+        let element = try JSONDecoder().decode(OfficeElement.self, from: elementJson)
+
+        let canvasSize = 100
+        var bytes = [UInt8](repeating: 255, count: canvasSize * canvasSize * 4)
+        let ctx = try #require(CGContext(
+            data: &bytes,
+            width: canvasSize,
+            height: canvasSize,
+            bitsPerComponent: 8,
+            bytesPerRow: canvasSize * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        ctx.translateBy(x: 0, y: CGFloat(canvasSize))
+        ctx.scaleBy(x: 1, y: -1)
+        CGElementDrawer.drawElement(in: ctx, element: element, images: ["ppt/media/avatar.png": blueImage])
+
+        let offset = (50 * canvasSize + 50) * 4
+        #expect(bytes[offset + 2] > 200 && bytes[offset] < 50, "圆心应保留纯蓝图片像素")
+
+        let corner = (2 * canvasSize + 2) * 4
+        #expect(bytes[corner] > 240 && bytes[corner + 1] > 240 && bytes[corner + 2] > 240, "矩形四角应被圆形蒙版裁剪为白底，且不应画出矩形边框")
+    }
+
+    }

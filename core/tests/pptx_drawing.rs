@@ -310,3 +310,85 @@ fn gradient(angle: &str, scaled: &str) -> String {
         r#"<a:gradFill><a:gsLst><a:gs pos="0"><a:srgbClr val="FF0000"/></a:gs><a:gs pos="100000"><a:srgbClr val="0000FF"/></a:gs></a:gsLst><a:lin ang="{angle}" scaled="{scaled}"/></a:gradFill>"#
     )
 }
+
+#[test]
+fn picture_supports_ellipse_round_rect_and_preset_masks_with_stroke() -> TestResult {
+    let json = slide(
+        r#"<p:spTree>
+          <p:pic>
+            <p:blipFill><a:blip r:embed="rImage"/></p:blipFill>
+            <p:spPr>
+              <a:xfrm><a:off x="0" y="0"/><a:ext cx="1270000" cy="1270000"/></a:xfrm>
+              <a:prstGeom prst="ellipse"><a:avLst/></a:prstGeom>
+              <a:ln w="25400"><a:solidFill><a:srgbClr val="1A73E8"/></a:solidFill></a:ln>
+            </p:spPr>
+          </p:pic>
+          <p:pic>
+            <p:blipFill><a:blip r:embed="rImage"/></p:blipFill>
+            <p:spPr>
+              <a:xfrm><a:off x="1270000" y="0"/><a:ext cx="1270000" cy="635000"/></a:xfrm>
+              <a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val 25000"/></a:avLst></a:prstGeom>
+            </p:spPr>
+          </p:pic>
+          <p:pic>
+            <p:blipFill><a:blip r:embed="rImage"/></p:blipFill>
+            <p:spPr>
+              <a:xfrm><a:off x="2540000" y="0"/><a:ext cx="1270000" cy="1270000"/></a:xfrm>
+              <a:prstGeom prst="star5"><a:avLst/></a:prstGeom>
+            </p:spPr>
+          </p:pic>
+        </p:spTree>"#,
+    )?;
+    let elements = json["pages"][0]["elements"]
+        .as_array()
+        .ok_or("missing elements")?;
+    assert_eq!(elements.len(), 3);
+    for el in elements {
+        assert_eq!(el["type"], "IMAGE");
+        assert!(
+            el["paths"]
+                .as_array()
+                .is_some_and(|paths| !paths.is_empty()),
+            "expected non-rectangular mask paths: {el}"
+        );
+    }
+    assert_eq!(elements[0]["stroke"], 0xff1a_73e8_u32);
+    assert_eq!(elements[0]["strokeWidth"], 2.0);
+    let warnings = json["warnings"].as_array().ok_or("missing warnings")?;
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.as_str() == Some("PPTX picture masks use rectangular bounds.")),
+        "supported picture masks must not emit fallback warning: {warnings:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn picture_unsupported_mask_warns_and_falls_back_to_rect() -> TestResult {
+    let json = slide(
+        r#"<p:spTree>
+          <p:pic>
+            <p:blipFill><a:blip r:embed="rImage"/></p:blipFill>
+            <p:spPr>
+              <a:xfrm><a:off x="0" y="0"/><a:ext cx="1270000" cy="635000"/></a:xfrm>
+              <a:prstGeom prst="cloud"><a:avLst/></a:prstGeom>
+            </p:spPr>
+          </p:pic>
+        </p:spTree>"#,
+    )?;
+    let elements = json["pages"][0]["elements"]
+        .as_array()
+        .ok_or("missing elements")?;
+    assert_eq!(elements.len(), 1);
+    assert_eq!(elements[0]["type"], "IMAGE");
+    assert!(elements[0].get("paths").is_none());
+    let warnings = json["warnings"].as_array().ok_or("missing warnings")?;
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str() == Some("PPTX picture masks use rectangular bounds.")),
+        "expected rectangular fallback warning: {warnings:?}"
+    );
+    Ok(())
+}

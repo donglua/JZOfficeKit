@@ -220,6 +220,36 @@ export class RenderUtils {
     return path2d;
   }
 
+  /**
+   * 将多组矢量路径依次追踪到 Canvas 上下文的当前路径中，供蒙版裁剪使用
+   */
+  public static tracePaths(ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, paths: model.Path[]): void {
+    ctx.beginPath();
+    for (const p of paths) {
+      if (!p.commands) continue;
+      for (const cmd of p.commands) {
+        const pts = cmd.points ?? [];
+        switch (cmd.op) {
+          case 'MOVE':
+            if (pts.length >= 2) ctx.moveTo(pts[0], pts[1]);
+            break;
+          case 'LINE':
+            if (pts.length >= 2) ctx.lineTo(pts[0], pts[1]);
+            break;
+          case 'QUAD':
+            if (pts.length >= 4) ctx.quadraticCurveTo(pts[0], pts[1], pts[2], pts[3]);
+            break;
+          case 'CUBIC':
+            if (pts.length >= 6) ctx.bezierCurveTo(pts[0], pts[1], pts[2], pts[3], pts[4], pts[5]);
+            break;
+          case 'CLOSE':
+            ctx.closePath();
+            break;
+        }
+      }
+    }
+  }
+
   private static readonly MAX_IMAGE_DIMENSION: number = 4096;
   private static readonly DEFAULT_MAX_PIXELS: number = 4_000_000;
 

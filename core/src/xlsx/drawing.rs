@@ -277,18 +277,15 @@ fn compile_picture(
     {
         document.warn("XLSX picture tiling and effects are not supported.");
     }
-    if let Some(properties) = shape.child("spPr") {
-        if properties.child("custGeom").is_some()
-            || properties
-                .child("prstGeom")
-                .is_some_and(|n| !matches!(n.attr("prst"), "" | "rect"))
-        {
-            document.warn(WARN_PICTURE_MASK);
-        }
-    }
     let mut element = bounds.element(ElementType::IMAGE);
     element.image = Some(path.clone());
     element.image_crop = image_crop;
+    element.paths = crate::pptx::styles::Styles::picture_mask_paths(
+        shape,
+        [element.width, element.height],
+        document,
+        WARN_PICTURE_MASK,
+    );
     // 图片外框描边：仅在 `spPr/a:ln` 明确给出可见线型时生效；使用 `line_only`
     // 避免非矩形图片蒙版（例如 cloud）进入几何分支误发 PPTX 告警并丢弃边框。
     if let Some(line) = shape.child("spPr").and_then(|p| p.child("ln")) {

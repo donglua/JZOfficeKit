@@ -48,6 +48,8 @@ public enum CGElementDrawer {
         let fillColor = argbToCGColor(element.fill)
         let strokeColor = argbToCGColor(element.stroke)
 
+        let hasImageMask = element.type == .image && !element.paths.isEmpty
+
         // 2. 绘制 PATH 矢量路径
         if element.type == .path && !element.paths.isEmpty {
             for p in element.paths {
@@ -99,7 +101,7 @@ public enum CGElementDrawer {
                 }
             }
 
-            if let strokeColor {
+            if !hasImageMask, let strokeColor {
                 ctx.setStrokeColor(strokeColor)
                 ctx.setLineWidth(max(0.5, element.strokeWidth))
                 // 虚线描边：先应用元素级点线序列，绘制完成后立即恢复实线
@@ -120,7 +122,18 @@ public enum CGElementDrawer {
         // 4. 绘制内嵌图片 (IMAGE)
         if element.type == .image {
             ctx.saveGState()
-            if w > 0 && h > 0 {
+            if hasImageMask {
+                let maskPath = CGMutablePath()
+                for p in element.paths where !p.commands.isEmpty {
+                    maskPath.addPath(buildCGPath(from: p.commands))
+                }
+                if !maskPath.isEmpty {
+                    ctx.addPath(maskPath)
+                    ctx.clip()
+                } else if w > 0 && h > 0 {
+                    ctx.clip(to: rect)
+                }
+            } else if w > 0 && h > 0 {
                 ctx.clip(to: rect)
             }
             if let part = element.image, let cgImage = images[part] {
@@ -138,6 +151,17 @@ public enum CGElementDrawer {
                 }
             }
             ctx.restoreGState()
+
+            if hasImageMask, let strokeColor, element.stroke != 0 {
+                ctx.setStrokeColor(strokeColor)
+                ctx.setLineWidth(max(0.5, element.strokeWidth))
+                ctx.setLineDash(phase: 0, lengths: element.strokeDash)
+                for p in element.paths where p.stroke && !p.commands.isEmpty {
+                    ctx.addPath(buildCGPath(from: p.commands))
+                    ctx.strokePath()
+                }
+                ctx.setLineDash(phase: 0, lengths: [])
+            }
         }
 
         // 5. 绘制表格 (TABLE)

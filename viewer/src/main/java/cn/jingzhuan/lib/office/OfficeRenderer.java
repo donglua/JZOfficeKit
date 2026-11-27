@@ -536,6 +536,7 @@ final class OfficeRenderer {
         canvas.save(); canvas.concat(d.transform);
         drawRect.set(0, 0, d.width, d.height);
         RectF rect = drawRect;
+        boolean hasImageMask = e.type == OfficeDocument.Type.IMAGE && !d.paths.isEmpty();
         if (e.type == OfficeDocument.Type.PATH) {
             for (int i = 0; i < d.paths.size(); i++) {
                 OfficeDocument.Path sourcePath = e.paths.get(i);
@@ -555,12 +556,15 @@ final class OfficeRenderer {
             paint.setStyle(Paint.Style.FILL); paint.setShader(d.fillShader); paint.setColor(d.fillShader == null ? e.fill : 0xffffffff);
             if (e.type == OfficeDocument.Type.ELLIPSE) canvas.drawOval(rect, paint);
             else if (e.type != OfficeDocument.Type.LINE) canvas.drawRect(rect, paint);
-            paint.setShader(null); paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(e.strokeWidth); paint.setColor(e.stroke);
-            applyStrokeDash(e);
-            if (e.type == OfficeDocument.Type.ELLIPSE) canvas.drawOval(rect, paint);
-            else if (e.type == OfficeDocument.Type.LINE) canvas.drawLine(0, 0, e.width, e.height, paint);
-            else if (e.stroke != 0) canvas.drawRect(rect, paint);
-            resetStrokeDash();
+            paint.setShader(null);
+            if (!hasImageMask) {
+                paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(e.strokeWidth); paint.setColor(e.stroke);
+                applyStrokeDash(e);
+                if (e.type == OfficeDocument.Type.ELLIPSE) canvas.drawOval(rect, paint);
+                else if (e.type == OfficeDocument.Type.LINE) canvas.drawLine(0, 0, e.width, e.height, paint);
+                else if (e.stroke != 0) canvas.drawRect(rect, paint);
+                resetStrokeDash();
+            }
         }
         if (e.type == OfficeDocument.Type.TEXT) {
             textBounds.set(rect);
@@ -576,6 +580,14 @@ final class OfficeRenderer {
         } else canvas.clipRect(rect);
         paint.setStyle(Paint.Style.FILL);
         if (e.type == OfficeDocument.Type.IMAGE) {
+            if (hasImageMask) {
+                canvas.save();
+                Path maskPath = new Path();
+                for (Path p : d.paths) {
+                    maskPath.addPath(p);
+                }
+                canvas.clipPath(maskPath);
+            }
             Bitmap bitmap = images.get(e.image);
             if (bitmap != null) {
                 paint.setColor(0xffffffff);
@@ -585,6 +597,22 @@ final class OfficeRenderer {
                 }
                 canvas.drawBitmap(bitmap, null, rect, paint);
             } else { paint.setColor(0xffe0e0e0); canvas.drawRect(rect, paint); }
+            if (hasImageMask) {
+                canvas.restore();
+                if (e.stroke != 0) {
+                    paint.setShader(null);
+                    paint.setStyle(Paint.Style.STROKE);
+                    paint.setStrokeWidth(Math.max(0.5f, e.strokeWidth));
+                    paint.setColor(e.stroke);
+                    applyStrokeDash(e);
+                    for (int i = 0; i < d.paths.size(); i++) {
+                        if (e.paths.get(i).stroke) {
+                            canvas.drawPath(d.paths.get(i), paint);
+                        }
+                    }
+                    resetStrokeDash();
+                }
+            }
         }
         if (e.type == OfficeDocument.Type.TABLE) {
             drawTableCellFills(canvas, e, d);
