@@ -13,7 +13,7 @@ pub enum Kind {
     XLSX,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
 pub enum ElementType {
     #[default]
     TEXT,
@@ -224,6 +224,21 @@ pub struct Document {
     pub margin_left: f32,
     #[serde(skip_serializing_if = "is_zero_f32")]
     pub margin_right: f32,
+    /// DOCX 正文大纲目录（来自 `Heading 1~6` / `w:outlineLvl`），为空时不序列化
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub outline: Vec<OutlineItem>,
+}
+
+/// DOCX 大纲目录项（跨平台 JSON 协议，字段采用 camelCase）
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlineItem {
+    /// 标题纯文本（已折叠空白并截断至 256 UTF-16 码元）
+    pub title: String,
+    /// 大纲层级：1..=6 对应 H1..H6
+    pub level: u8,
+    /// 目标正文块在 `document.blocks` 中的索引（0-based）
+    pub block_index: u32,
 }
 
 impl Document {
@@ -245,6 +260,7 @@ impl Document {
             margin_bottom: 0.0,
             margin_left: 0.0,
             margin_right: 0.0,
+            outline: Vec::new(),
         }
     }
 

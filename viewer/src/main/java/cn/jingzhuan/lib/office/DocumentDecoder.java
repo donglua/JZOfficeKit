@@ -8,6 +8,8 @@ import java.util.List;
 final class DocumentDecoder {
     /** 单个页眉/页脚部件的块数量上限，须与 core 的 MAX_SECTION_BLOCKS 保持一致 */
     private static final int MAX_SECTION_BLOCKS = 500;
+    /** DOCX 大纲目录最大条目数，须与 core 的 MAX_OUTLINE_ITEMS 保持一致 */
+    private static final int MAX_OUTLINE_ITEMS = 500;
     /** 工作簿内所有工作表共享的浮动元素预算，须与 core 的 5000 元素上限一致 */
     private static final int MAX_SHEET_ELEMENTS = 5000;
     /** 基本类型数组解码的初始容量，避免大数组场景的装箱分配 */
@@ -110,6 +112,14 @@ final class DocumentDecoder {
                     case "marginRight":
                         document.marginRight = (float) c.nextDouble();
                         break;
+                    case "outline":
+                        c.beginArray();
+                        while (c.hasNext()) {
+                            if (document.outline.size() >= MAX_OUTLINE_ITEMS) throw new IllegalArgumentException("Too many outline items");
+                            document.outline.add(outlineItem(c));
+                        }
+                        c.endArray();
+                        break;
                     default:
                         c.skipValue();
                         break;
@@ -164,6 +174,39 @@ final class DocumentDecoder {
         } catch (RuntimeException e) {
             throw new IOException("Invalid core search result", e);
         }
+    }
+
+    private static OfficeDocument.OutlineItem outlineItem(Cursor c) {
+        OfficeDocument.OutlineItem item = new OfficeDocument.OutlineItem();
+        boolean hasTitle = false, hasLevel = false, hasBlock = false;
+        c.beginObject();
+        while (c.hasNext()) {
+            switch (c.nextName()) {
+                case "title":
+                    item.title = c.nextString();
+                    hasTitle = true;
+                    break;
+                case "level":
+                    item.level = c.nextInt();
+                    hasLevel = true;
+                    break;
+                case "blockIndex":
+                    item.blockIndex = c.nextInt();
+                    hasBlock = true;
+                    break;
+                default:
+                    c.skipValue();
+                    break;
+            }
+        }
+        c.endObject();
+        if (!hasTitle || !hasLevel || !hasBlock) {
+            throw new IllegalArgumentException("Missing required outline item fields");
+        }
+        if (item.level < 1 || item.level > 6 || item.blockIndex < 0) {
+            throw new IllegalArgumentException("Invalid outline item range");
+        }
+        return item;
     }
 
     private static OfficeDocument.SearchMatch searchMatch(Cursor c) {

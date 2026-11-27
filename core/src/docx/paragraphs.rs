@@ -8,6 +8,7 @@ impl Parser<'_> {
         let (mut format, font) =
             self.styles
                 .paragraph(node, &mut self.numbering, &mut self.document)?;
+        let outline_level = if in_cell { None } else { format.outline_level };
         if !in_cell {
             if self.last_contextual
                 && format.contextual_spacing
@@ -67,6 +68,7 @@ impl Parser<'_> {
             );
         }
         self.text_bytes = flow.text_bytes;
+        self.last_outline_level = outline_level;
         Ok(flow.elements)
     }
 

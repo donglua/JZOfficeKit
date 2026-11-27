@@ -202,6 +202,13 @@ export interface MergeRect {
   endRow: number;
 }
 
+/** DOCX 大纲目录项（对应 Heading 1~6 / w:outlineLvl） */
+export interface OutlineItem {
+  title: string;
+  level: number;
+  blockIndex: number;
+}
+
 export interface OfficeDocument {
   schemaVersion: number;
   kind: Kind;
@@ -224,6 +231,8 @@ export interface OfficeDocument {
   marginBottom?: number;
   marginLeft?: number;
   marginRight?: number;
+  /** DOCX 正文大纲目录（schemaVersion 9 新增可选字段） */
+  outline?: OutlineItem[];
 }
 
 /**

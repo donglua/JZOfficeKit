@@ -410,6 +410,8 @@ export interface OfficePreviewActions {
   getPageCount: () => number;
   getCurrentPage: () => number;
   getSheetNames: () => string[];
+  getOutline: () => model.OutlineItem[];
+  scrollToBlock: (blockIndex: number) => void;
   getZoom: () => number;
   setZoom: (value: number) => void;
   resetZoom: () => void;
@@ -527,6 +529,14 @@ export class OfficePreviewController {
 
   public getSheetNames(): string[] {
     return this.actions ? this.actions.getSheetNames() : [];
+  }
+
+  public getOutline(): model.OutlineItem[] {
+    return this.actions ? this.actions.getOutline() : [];
+  }
+
+  public scrollToBlock(blockIndex: number): void {
+    this.actions?.scrollToBlock(blockIndex);
   }
 
   public getZoom(): number {
@@ -677,6 +687,19 @@ export struct OfficePreviewView {
       getPageCount: (): number => this.computePageCount(this.rawDocument),
       getCurrentPage: (): number => this.currentPage,
       getSheetNames: (): string[] => this.extractSheetNames(this.rawDocument),
+      getOutline: (): model.OutlineItem[] => this.rawDocument?.outline ?? [],
+      scrollToBlock: (blockIndex: number): void => {
+        if (this.rawDocument?.kind !== 'DOCX' || !this.childScrollToMatch) return;
+        const headerCount = this.rawDocument.headerBlocks?.length ?? 0;
+        this.childScrollToMatch({
+          pageIndex: 0,
+          elementIndex: headerCount + blockIndex,
+          paragraphIndex: 0,
+          startChar: 0,
+          endChar: 0,
+          snippet: ''
+        });
+      },
       getZoom: (): number => (this.childGetZoom ? this.childGetZoom() : 1.0),
       setZoom: (value: number): void => {
         if (this.childSetZoom) this.childSetZoom(value);

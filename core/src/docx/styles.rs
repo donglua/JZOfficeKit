@@ -178,6 +178,7 @@ impl Styles {
             }),
         };
         if let Some(level) = level {
+            format.outline_level = (1..=6).contains(&level).then_some(level);
             font.run.size = match level {
                 1 => 24.0,
                 2 => 20.0,
@@ -224,8 +225,10 @@ fn heading(name: &str) -> Option<u8> {
         return None;
     }
     let normalized = name.replace(' ', "").to_ascii_lowercase();
-    normalized
-        .strip_prefix("heading")?
+    let suffix = normalized
+        .strip_prefix("heading")
+        .or_else(|| normalized.strip_prefix("标题"))?;
+    suffix
         .parse::<u8>()
         .ok()
         .filter(|level| (1..=9).contains(level))

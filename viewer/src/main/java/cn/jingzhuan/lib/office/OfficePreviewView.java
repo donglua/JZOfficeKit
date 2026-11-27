@@ -151,6 +151,18 @@ public final class OfficePreviewView extends View {
         }
     }
 
+    public static final class OutlineItem {
+        public final String title;
+        public final int level;
+        public final int blockIndex;
+
+        OutlineItem(OfficeDocument.OutlineItem internal) {
+            this.title = internal.title != null ? internal.title : "";
+            this.level = internal.level;
+            this.blockIndex = internal.blockIndex;
+        }
+    }
+
     public static final class Info {
         public final String format;
         public final int pageCount;
@@ -1906,6 +1918,28 @@ public final class OfficePreviewView extends View {
         }
         invalidate();
         notifySearchMatchChanged();
+    }
+
+    /** 返回当前 DOCX 文档的大纲目录列表；无大纲或非 DOCX 时返回空列表 */
+    public List<OutlineItem> getOutline() {
+        if (document == null || document.outline.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<OutlineItem> items = new ArrayList<>(document.outline.size());
+        for (int i = 0; i < document.outline.size(); i++) {
+            items.add(new OutlineItem(document.outline.get(i)));
+        }
+        return Collections.unmodifiableList(items);
+    }
+
+    /** 滚动到 DOCX 正文指定块索引（0-based，对应 {@link OutlineItem#blockIndex}） */
+    public void scrollToBlock(int blockIndex) {
+        if (document == null || document.kind != OfficeDocument.Kind.DOCX || renderer.pages.isEmpty()) return;
+        int targetElementIndex = document.headerBlocks.size() + blockIndex;
+        OfficeRenderer.Page page = renderer.pages.get(0);
+        if (targetElementIndex < 0 || targetElementIndex >= page.elements.size()) return;
+        OfficeRenderer.Element d = page.elements.get(targetElementIndex);
+        scrollToHighlight(new RectF(d.bounds));
     }
 
     public void scrollToHighlight(RectF targetRect) {

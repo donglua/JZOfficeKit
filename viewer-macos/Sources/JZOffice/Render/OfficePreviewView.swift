@@ -25,6 +25,7 @@ public final class OfficePreviewController: ObservableObject {
     @Published public internal(set) var sheetNames: [String] = []
     @Published public internal(set) var zoom: CGFloat = 1.0
     @Published public internal(set) var metadata: OfficeMetadata?
+    @Published public internal(set) var outline: [OfficeOutlineItem] = []
     @Published public internal(set) var imageLoader: OfficeImageLoader?
     @Published internal var imageVersion: UInt = 0
 
@@ -120,6 +121,11 @@ public final class OfficePreviewController: ObservableObject {
             guard !Task.isCancelled else { return }
             self?.programmaticScrollTarget = nil
         }
+    }
+
+    /// 跳转到 DOCX 正文指定块索引（0-based，对应 `outline[i].blockIndex`）
+    public func jumpToBlock(_ blockIndex: Int) {
+        canvasView?.scrollToBlock(blockIndex)
     }
 
     public func onPageScrollDetected(page: Int) {
@@ -501,6 +507,7 @@ public struct OfficePreviewView: View {
         controller.errorMessage = nil
         controller.document = nil
         controller.metadata = nil
+        controller.outline = []
         controller.imageCache = [:]
         controller.currentFilePath = url.path
         controller.clearSearch()
@@ -517,6 +524,7 @@ public struct OfficePreviewView: View {
             }
             controller.imageLoader = loader
             controller.document = parsed
+            controller.outline = parsed.outline
             controller.isLoading = false
 
             let meta = OfficeMetadata.fromDocument(parsed)
@@ -930,6 +938,26 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
                     lastScrolledMatchIndex = currentIndex
                 }
             }
+        }
+    }
+
+    func scrollToBlock(_ blockIndex: Int) {
+        guard let doc = document, doc.kind == .docx else { return }
+        let plan = docxLayoutPlan ?? CGElementDrawer.layoutDocxBlocks(in: doc)
+        let targetElementIndex = doc.headerBlocks.count + blockIndex
+        guard targetElementIndex >= 0 && targetElementIndex < plan.placements.count else { return }
+        let frame = plan.placements[targetElementIndex].frame
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let clipView = self.enclosingScrollView?.contentView else { return }
+            let clipBounds = clipView.bounds
+            let insets = self.enclosingScrollView?.contentInsets ?? NSEdgeInsets()
+            let insetTop = max(0, insets.top)
+            let insetBottom = max(0, insets.bottom)
+            let minY = -insetTop
+            let maxY = max(minY, self.bounds.height - clipBounds.height + insetBottom)
+            let targetY = min(max(minY, (frame.minY - 24) * self.zoom - insetTop), maxY)
+            clipView.animator().scroll(to: NSPoint(x: clipBounds.minX, y: targetY))
+            self.enclosingScrollView?.reflectScrolledClipView(clipView)
         }
     }
 

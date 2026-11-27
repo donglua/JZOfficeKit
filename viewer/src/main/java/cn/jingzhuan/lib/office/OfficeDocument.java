@@ -21,6 +21,7 @@ final class OfficeDocument {
     final List<Element> footerBlocks = new ArrayList<>();
     float headerDistance, footerDistance;
     float marginTop, marginBottom, marginLeft, marginRight;
+    final List<OutlineItem> outline = new ArrayList<>();
 
     void warn(String message) {
         if (!warnings.contains(message)) warnings.add(message);
@@ -147,5 +148,11 @@ final class OfficeDocument {
         int startChar;
         int endChar;
         String snippet = "";
+    }
+
+    static final class OutlineItem {
+        String title = "";
+        int level = 1;
+        int blockIndex;
     }
 }

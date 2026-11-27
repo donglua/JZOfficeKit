@@ -697,6 +697,19 @@ public struct OfficeSheet: Codable, Sendable {
     }
 }
 
+/// DOCX 大纲目录项（对应 `Heading 1~6` / `w:outlineLvl`）
+public struct OfficeOutlineItem: Codable, Equatable, Sendable {
+    public let title: String
+    public let level: Int
+    public let blockIndex: Int
+
+    public init(title: String, level: Int, blockIndex: Int) {
+        self.title = title
+        self.level = level
+        self.blockIndex = blockIndex
+    }
+}
+
 public struct OfficeDocument: Codable, Sendable {
     public static let expectedSchemaVersion: Int = 9
 
@@ -716,11 +729,13 @@ public struct OfficeDocument: Codable, Sendable {
     public let marginBottom: CGFloat
     public let marginLeft: CGFloat
     public let marginRight: CGFloat
+    public let outline: [OfficeOutlineItem]
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion, kind, width, pages, blocks, warnings, sheets, cellStyles
         case headerBlocks, footerBlocks, headerDistance, footerDistance
         case marginTop, marginBottom, marginLeft, marginRight
+        case outline
     }
 
     public init(from decoder: Decoder) throws {

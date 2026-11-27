@@ -9,7 +9,7 @@ mod styles;
 mod tables;
 pub(super) mod theme;
 
-use crate::model::{Document, Element, Kind};
+use crate::model::{Document, Element, ElementType, Kind, OutlineItem, WrapMode};
 use crate::xml::{self, Node};
 use crate::{Error, Package, Result};
 use notes::{NoteCollection, NoteKind};
@@ -116,8 +116,11 @@ pub(crate) fn parse(
         last_contextual: false,
         page_height,
         budget: scope.block_budget(),
+        collect_outline: true,
+        last_outline_level: None,
     };
     parser.body(body)?;
+    parser.collect_outline = false;
     parser.parse_notes()?;
     // 解析页眉页脚（在正文之后，避免影响正文的 blocks 计数）。
     // 多节文档中页眉页脚引用按节继承，使用按文档顺序收集的全部 sectPr。
@@ -144,6 +147,9 @@ struct Parser<'a> {
     pub(super) page_height: f32,
     /// 剩余可解析的正文块预算；首屏缩略图只排版少量块即可返回
     pub(super) budget: Option<usize>,
+    /// 仅在解析正文流时收集大纲目录（排除页眉/页脚/脚注与文本框）
+    collect_outline: bool,
+    pub(super) last_outline_level: Option<u8>,
 }
 
 impl Parser<'_> {
@@ -157,8 +163,38 @@ impl Parser<'_> {
             }
             match node.name.as_str() {
                 "p" => {
-                    for block in self.paragraph(node, false)? {
+                    self.last_outline_level = None;
+                    let blocks = self.paragraph(node, false)?;
+                    let outline_level = if self.collect_outline {
+                        self.last_outline_level
+                    } else {
+                        None
+                    };
+                    let mut title_raw = String::new();
+                    let mut target_block_index = None;
+                    for block in blocks {
+                        if outline_level.is_some()
+                            && block.kind == ElementType::TEXT
+                            && block.wrap_mode == WrapMode::Inline
+                        {
+                            if target_block_index.is_none() {
+                                target_block_index = Some(self.document.blocks.len());
+                            }
+                            for paragraph in &block.paragraphs {
+                                for run in &paragraph.runs {
+                                    title_raw.push_str(&run.text);
+                                }
+                            }
+                        }
                         self.push(block)?;
+                    }
+                    if let (Some(level), Some(block_index)) = (outline_level, target_block_index) {
+                        push_outline_item(
+                            &mut self.document.outline,
+                            level,
+                            block_index,
+                            &title_raw,
+                        );
                     }
                 }
                 "tbl" => {
@@ -184,7 +220,10 @@ impl Parser<'_> {
                         }
                     }
                     if let Some(content) = node.descendant("txbxContent") {
+                        let prev_collect = self.collect_outline;
+                        self.collect_outline = false;
                         self.body(content)?;
+                        self.collect_outline = prev_collect;
                     }
                 }
                 name if skipped(name) => (),
@@ -415,6 +454,55 @@ fn is_simple_vml_image(pict: &Node) -> bool {
         && pict.descendant("txbxContent").is_none()
         && pict.descendant("textbox").is_none()
         && !has_unhandled_vml(pict)
+}
+
+const MAX_OUTLINE_ITEMS: usize = 500;
+const MAX_OUTLINE_TITLE_UTF16: usize = 256;
+
+fn push_outline_item(
+    outline: &mut Vec<OutlineItem>,
+    level: u8,
+    block_index: usize,
+    raw_title: &str,
+) {
+    if outline.len() >= MAX_OUTLINE_ITEMS || !(1..=6).contains(&level) {
+        return;
+    }
+    let Ok(block_index) = u32::try_from(block_index) else {
+        return;
+    };
+    let mut normalized = String::new();
+    for part in raw_title.split_whitespace() {
+        if !normalized.is_empty() {
+            normalized.push(' ');
+        }
+        normalized.push_str(part);
+    }
+    if normalized.is_empty() {
+        return;
+    }
+    let mut utf16_count = 0_usize;
+    let mut cut = normalized.len();
+    for (idx, ch) in normalized.char_indices() {
+        let len16 = ch.len_utf16();
+        if utf16_count + len16 > MAX_OUTLINE_TITLE_UTF16 {
+            cut = idx;
+            break;
+        }
+        utf16_count += len16;
+    }
+    if cut < normalized.len() {
+        normalized.truncate(cut);
+        normalized = normalized.trim_end().to_owned();
+    }
+    if normalized.is_empty() {
+        return;
+    }
+    outline.push(OutlineItem {
+        title: normalized,
+        level,
+        block_index,
+    });
 }
 
 fn has_unhandled_vml(node: &Node) -> bool {
