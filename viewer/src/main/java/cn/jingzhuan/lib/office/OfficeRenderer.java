@@ -355,6 +355,18 @@ final class OfficeRenderer {
             if (limitViewport && y > viewportHeight) break;
             boolean floating = !"INLINE".equals(source.wrapMode);
             if (!floating) {
+                if (source.pageBreakBefore && y > sectionMinY + 1f) {
+                    if (!activeObstacles.isEmpty()) {
+                        y = Math.max(y, maxObstacleBottom(activeObstacles) + 6f);
+                        activeObstacles.clear();
+                    }
+                    if (document != null && document.pageHeight > 0f) {
+                        float nextBoundary = (float) (Math.floor(y / document.pageHeight) + 1.0) * document.pageHeight;
+                        y = Math.max(y + 24f, nextBoundary + 24f);
+                    } else {
+                        y += 24f;
+                    }
+                }
                 pruneObstacles(activeObstacles, y);
                 if (source.type == OfficeDocument.Type.TABLE && !activeObstacles.isEmpty()) {
                     y = Math.max(y, maxObstacleBottom(activeObstacles) + 6f);

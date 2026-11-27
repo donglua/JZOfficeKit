@@ -67,6 +67,7 @@ pub(crate) fn parse(
             page_height =
                 (xml::number(size.attr("h"), 15840.0) / 20.0).clamp(300.0, MAX_COORDINATE);
         }
+        document.page_height = page_height;
         let margins_sect = sections
             .iter()
             .rev()
@@ -122,6 +123,7 @@ pub(crate) fn parse(
         last_outline_level: None,
         active_link: None,
         bookmarks: HashMap::new(),
+        pending_next_page_break: false,
     };
     parser.body(body)?;
     parser.collect_outline = false;
@@ -158,6 +160,8 @@ struct Parser<'a> {
     pub(super) last_outline_level: Option<u8>,
     pub(super) active_link: Option<String>,
     pub(super) bookmarks: HashMap<String, usize>,
+    /// 上一段末尾出现 `<w:br w:type="page"/>` 时置位，落到下一正文块首部
+    pub(super) pending_next_page_break: bool,
 }
 
 impl Parser<'_> {
@@ -208,7 +212,11 @@ impl Parser<'_> {
                 "tbl" => {
                     self.last_style_id = None;
                     self.last_contextual = false;
-                    let table = self.table(node)?;
+                    let mut table = self.table(node)?;
+                    if self.pending_next_page_break {
+                        table.page_break_before = true;
+                        self.pending_next_page_break = false;
+                    }
                     self.push(table)?;
                 }
                 "sdt" => {
@@ -443,9 +451,7 @@ fn inspect_node(node: &Node, document: &mut Document, in_drawing: bool) {
         "vertAlign" | "strike" | "dstrike" | "vanish" => {
             Some("Some advanced run formatting is not reproduced.")
         }
-        "pageBreakBefore" if format::enabled(node.attr("val")) => {
-            Some("Paragraph page breaks are ignored in continuous flow.")
-        }
+        "pageBreakBefore" => None,
         "effectLst" => Some("Image drawing effects are not reproduced."),
         _ => None,
     };

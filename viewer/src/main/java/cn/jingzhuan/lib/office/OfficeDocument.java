@@ -11,6 +11,8 @@ final class OfficeDocument {
     enum LineSpacingRule { AUTO, EXACT, AT_LEAST }
     Kind kind;
     float width = 595;
+    /** DOCX 页面高度（点），来自 sectPr/pgSz@h，0 表示未声明 */
+    float pageHeight;
     final List<Page> pages = new ArrayList<>();
     final List<Element> blocks = new ArrayList<>();
     final List<SpreadsheetDocument.Sheet> sheets = new ArrayList<>();
@@ -72,6 +74,7 @@ final class OfficeDocument {
         final List<Path> paths = new ArrayList<>();
         GradientFill fillGradient;
         String link;
+        boolean pageBreakBefore;
     }
 
     /** 单元格单边边框：color 为 ARGB 颜色，width 为线宽（pt，0 表示不绘制） */
@@ -114,7 +117,6 @@ final class OfficeDocument {
         Float imageWidth;
         Float imageHeight;
         int background;
-        String link;
         int borderTop, borderBottom, borderLeft, borderRight;
         float borderWidth;
     }
@@ -130,6 +132,7 @@ final class OfficeDocument {
         float spacing;
         int weight;
         int background;
+        String link;
 
         Run copy() {
             Run r = new Run();

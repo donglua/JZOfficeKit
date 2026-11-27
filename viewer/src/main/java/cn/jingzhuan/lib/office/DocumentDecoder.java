@@ -42,6 +42,9 @@ final class DocumentDecoder {
                         document.width = (float) c.nextDouble();
                         hasWidth = true;
                         break;
+                    case "pageHeight":
+                        document.pageHeight = (float) c.nextDouble();
+                        break;
                     case "warnings":
                         c.beginArray();
                         while (c.hasNext()) document.warn(c.nextString());
@@ -792,6 +795,9 @@ final class DocumentDecoder {
                 case "link":
                     if (c.peekNull()) { c.nextNull(); e.link = null; }
                     else e.link = c.nextString();
+                    break;
+                case "pageBreakBefore":
+                    e.pageBreakBefore = c.nextBoolean();
                     break;
                 case "paragraphs":
                     if (c.peekNull()) c.nextNull();

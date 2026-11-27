@@ -22,6 +22,7 @@ public final class DocumentDecoderChecks {
         checkTableCellValignsAndBorders();
         checkStrokeDashDecoding();
         checkTableRowHeightsAndCellPaddings();
+        checkOutlineLinksAndPaginationFields();
         System.out.println("PASS DocumentDecoderChecks (" + passed + " assertions)");
     }
 
@@ -792,6 +793,37 @@ public final class DocumentDecoderChecks {
             "Invalid core display model", "negative distTop");
         reject(floatingJson.replace("\"distRight\":12.5", "\"distRight\":1200.5"),
             "Invalid core display model", "excessive distRight");
+    }
+
+    private static void checkOutlineLinksAndPaginationFields() throws Exception {
+        String docxJson = "{\"schemaVersion\":9,\"kind\":\"DOCX\",\"width\":595,\"pageHeight\":842,\"warnings\":[],\"pages\":[],"
+            + "\"cellStyles\":[],\"sheets\":[],"
+            + "\"outline\":[{\"title\":\"总览\",\"level\":1,\"blockIndex\":0},{\"title\":\"细则\",\"level\":2,\"blockIndex\":1}],"
+            + "\"blocks\":["
+            + "{\"type\":\"TEXT\",\"x\":0,\"y\":0,\"width\":450,\"height\":0,\"padding\":0,\"transform\":[1,0,0,1,0,0],"
+            + "\"fill\":0,\"stroke\":0,\"strokeWidth\":1,\"verticalAlignment\":\"TOP\",\"textWrap\":true,\"link\":\"https://example.com\","
+            + "\"paragraphs\":[{\"alignment\":0,\"before\":0,\"after\":6,\"indent\":0,\"rightIndent\":0,\"firstLineIndent\":0,"
+            + "\"lineSpacingRule\":\"AUTO\",\"lineSpacing\":1,\"runs\":[{\"text\":\"链接\",\"size\":12,\"bold\":false,\"italic\":false,\"underline\":true,\"color\":0,\"link\":\"#block:1\"}]}]},"
+            + "{\"type\":\"TEXT\",\"x\":0,\"y\":0,\"width\":450,\"height\":0,\"padding\":0,\"transform\":[1,0,0,1,0,0],"
+            + "\"fill\":0,\"stroke\":0,\"strokeWidth\":1,\"verticalAlignment\":\"TOP\",\"textWrap\":true,\"pageBreakBefore\":true,\"paragraphs\":[]}"
+            + "]}";
+        OfficeDocument doc = DocumentDecoder.decode(docxJson);
+        check(doc.pageHeight == 842f, "decoded pageHeight 842");
+        check(doc.outline.size() == 2, "decoded 2 outline items");
+        check("总览".equals(doc.outline.get(0).title) && doc.outline.get(0).level == 1 && doc.outline.get(0).blockIndex == 0, "outline item 0");
+        check("https://example.com".equals(doc.blocks.get(0).link), "element link decoded");
+        check("#block:1".equals(doc.blocks.get(0).paragraphs.get(0).runs.get(0).link), "run link decoded");
+        check(doc.blocks.get(1).pageBreakBefore, "pageBreakBefore decoded");
+
+        reject(docxJson.replace("\"level\":1", "\"level\":7"), "Invalid core display model", "outline level > 6");
+        reject(docxJson.replace("\"blockIndex\":0", "\"blockIndex\":-1"), "Invalid core display model", "negative outline blockIndex");
+
+        String xlsxJson = "{\"schemaVersion\":9,\"kind\":\"XLSX\",\"width\":595,\"warnings\":[],\"pages\":[],\"blocks\":[],"
+            + "\"cellStyles\":[{\"fontSize\":11,\"bold\":false,\"italic\":false,\"underline\":false,\"color\":0,\"fill\":0,\"alignment\":3,\"verticalAlignment\":\"BOTTOM\",\"wrap\":false,\"borders\":[null,null,null,null]}],"
+            + "\"sheets\":[{\"name\":\"S1\",\"rowHeights\":[20],\"columnWidths\":[60],\"merges\":[],"
+            + "\"cells\":[{\"row\":0,\"column\":0,\"text\":\"Link\",\"style\":0,\"numeric\":false,\"link\":\"https://example.com\"}]}]}";
+        OfficeDocument sheetDoc = DocumentDecoder.decode(xlsxJson);
+        check("https://example.com".equals(sheetDoc.sheets.get(0).cells.get(0).link), "cell link decoded");
     }
 
     private static void reject(String json, String expectedMessage, String label) {

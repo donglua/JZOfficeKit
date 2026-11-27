@@ -9,6 +9,8 @@ impl Parser<'_> {
             self.styles
                 .paragraph(node, &mut self.numbering, &mut self.document)?;
         let outline_level = if in_cell { None } else { format.outline_level };
+        let initial_page_break = !in_cell
+            && (format.page_break_before || std::mem::take(&mut self.pending_next_page_break));
         if !in_cell {
             if self.last_contextual
                 && format.contextual_spacing
@@ -44,6 +46,7 @@ impl Parser<'_> {
             },
             limit_message: self.block_limit.message,
             text_bytes: self.text_bytes,
+            pending_page_break: initial_page_break,
         };
         self.inline(node, &font, &mut flow)?;
         if flow.elements.is_empty() && flow.floating.is_empty() && flow.current.runs.is_empty() {
@@ -61,6 +64,9 @@ impl Parser<'_> {
             flow.flush()?;
         } else {
             flow.flush_floating()?;
+        }
+        if flow.pending_page_break && !in_cell {
+            self.pending_next_page_break = true;
         }
         if flow.split_inline_drawing {
             self.document.warn(
@@ -178,11 +184,24 @@ impl Parser<'_> {
                 }
                 "tab" | "ptab" => flow.text(font.run("\t", &mut self.document))?,
                 "br" | "cr" => {
-                    if matches!(node.attr("type"), "page" | "column") {
-                        self.document
-                            .warn("Page and column breaks are rendered as line breaks.");
+                    if node.name == "br" && node.attr("type") == "page" && !flow.in_cell {
+                        if !flow.current.runs.is_empty() || !flow.current.bullet.is_empty() {
+                            flow.current.after = 0.0;
+                            flow.flush()?;
+                        } else {
+                            flow.flush_floating()?;
+                        }
+                        flow.current = flow.template.clone();
+                        flow.current.before = 0.0;
+                        flow.current.bullet.clear();
+                        flow.pending_page_break = true;
+                    } else {
+                        if node.attr("type") == "column" {
+                            self.document
+                                .warn("Page and column breaks are rendered as line breaks.");
+                        }
+                        flow.text(font.run("\n", &mut self.document))?;
                     }
-                    flow.text(font.run("\n", &mut self.document))?;
                 }
                 "noBreakHyphen" => flow.text(font.run("\u{2011}", &mut self.document))?,
                 "softHyphen" => flow.text(font.run("\u{ad}", &mut self.document))?,
@@ -262,6 +281,7 @@ struct Flow {
     limit: usize,
     limit_message: &'static str,
     text_bytes: usize,
+    pending_page_break: bool,
 }
 
 impl Flow {
@@ -397,9 +417,13 @@ impl Flow {
         })
     }
 
-    fn push(&mut self, element: Element) -> Result<()> {
+    fn push(&mut self, mut element: Element) -> Result<()> {
         if self.elements.len() >= self.limit {
             return Err(Error::Limit(self.limit_message));
+        }
+        if self.pending_page_break && element.wrap_mode == WrapMode::Inline {
+            element.page_break_before = true;
+            self.pending_page_break = false;
         }
         self.elements.push(element);
         Ok(())
@@ -424,6 +448,7 @@ mod tests {
             limit: 5000,
             limit_message: "DOCX exceeds 5000 flow blocks",
             text_bytes: 0,
+            pending_page_break: false,
         };
         let chunk = "a".repeat(1024 * 1024);
         let mut result = Ok(());

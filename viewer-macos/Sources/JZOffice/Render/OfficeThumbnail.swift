@@ -43,13 +43,15 @@ public enum OfficeThumbnail {
             throw OfficeError.invalidArguments("pageNumber must be >= 1, got \(pageNumber)")
         }
         let path = url.path
-        // 封面只取首页：走首屏解析，避免为一张缩略图承担整篇文档的解析成本
-        let doc = try NativeCore.parseFirstViewport(at: path)
+        // 封面只取首页时走首屏解析；导出或预览后续页时走完整解析
+        let doc = pageNumber == 1
+            ? try NativeCore.parseFirstViewport(at: path)
+            : try NativeCore.parseDocument(at: path)
         switch doc.kind {
         case .pptx:
             return try renderPptxThumbnail(filePath: path, doc: doc, pageIndex: pageNumber - 1, maxSize: maxSize)
         case .docx:
-            return try renderDocxThumbnail(filePath: path, doc: doc, maxSize: maxSize)
+            return try renderDocxThumbnail(filePath: path, doc: doc, pageIndex: pageNumber - 1, maxSize: maxSize)
         case .xlsx:
             defer { NativeCore.evictCache(at: path) }
             return try renderXlsxThumbnail(filePath: path, doc: doc, sheetIndex: pageNumber - 1, maxSize: maxSize)
@@ -120,10 +122,15 @@ public enum OfficeThumbnail {
     private static func renderDocxThumbnail(
         filePath: String,
         doc: OfficeDocument,
+        pageIndex: Int = 0,
         maxSize: CGSize
     ) throws -> CGImage {
         let docW = doc.width > 0 ? doc.width : 595
-        let docH = docW * 1.414
+        let fallbackH = doc.pageHeight > 0 ? doc.pageHeight : round(docW * 1.414)
+        let plan = CGElementDrawer.layoutDocxBlocks(in: doc, maxHeight: pageIndex == 0 ? fallbackH : nil)
+        let clampedPage = max(0, min(max(0, plan.pages.count - 1), pageIndex))
+        let targetPage = clampedPage < plan.pages.count ? plan.pages[clampedPage] : nil
+        let docH = targetPage?.frame.height ?? fallbackH
         let scale = min(maxSize.width / docW, maxSize.height / docH)
         let outW = max(1, Int(round(docW * scale)))
         let outH = max(1, Int(round(docH * scale)))
@@ -154,9 +161,24 @@ public enum OfficeThumbnail {
         ctx.fill(CGRect(x: 0, y: 0, width: docW, height: docH))
 
         let cache = imageStore.snapshot
-        let plan = CGElementDrawer.layoutDocxBlocks(in: doc, maxHeight: docH)
-        for idx in plan.zOrder {
-            CGElementDrawer.drawDocxPlacement(in: ctx, placement: plan.placements[idx], images: cache)
+        if let targetPage {
+            ctx.saveGState()
+            ctx.clip(to: CGRect(x: 0, y: 0, width: docW, height: docH))
+            ctx.translateBy(x: 0, y: -targetPage.frame.minY)
+            for header in targetPage.headerPlacements {
+                CGElementDrawer.drawDocxPlacement(in: ctx, placement: header, images: cache)
+            }
+            for idx in targetPage.bodyIndices {
+                CGElementDrawer.drawDocxPlacement(in: ctx, placement: plan.placements[idx], images: cache)
+            }
+            for footer in targetPage.footerPlacements {
+                CGElementDrawer.drawDocxPlacement(in: ctx, placement: footer, images: cache)
+            }
+            ctx.restoreGState()
+        } else {
+            for idx in plan.zOrder {
+                CGElementDrawer.drawDocxPlacement(in: ctx, placement: plan.placements[idx], images: cache)
+            }
         }
 
         guard let cgImage = ctx.makeImage() else {

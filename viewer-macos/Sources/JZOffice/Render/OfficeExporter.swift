@@ -70,20 +70,30 @@ public enum OfficeExporter {
         case .docx:
             let docW = doc.width > 0 ? doc.width : 595
             let plan = CGElementDrawer.layoutDocxBlocks(in: doc)
-            let pageH = max(docW * 1.414, plan.contentHeight)
-            var mediaBox = CGRect(x: 0, y: 0, width: docW, height: pageH)
-            pdfCtx.beginPage(mediaBox: &mediaBox)
-            pdfCtx.saveGState()
-            pdfCtx.translateBy(x: 0, y: pageH)
-            pdfCtx.scaleBy(x: 1, y: -1)
-            pdfCtx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
-            pdfCtx.fill(mediaBox)
+            for page in plan.pages {
+                let pH = page.frame.height > 0 ? page.frame.height : max(docW * 1.414, plan.pageHeight)
+                var mediaBox = CGRect(x: 0, y: 0, width: docW, height: pH)
+                pdfCtx.beginPage(mediaBox: &mediaBox)
+                pdfCtx.saveGState()
+                pdfCtx.translateBy(x: 0, y: pH)
+                pdfCtx.scaleBy(x: 1, y: -1)
+                pdfCtx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+                pdfCtx.fill(mediaBox)
+                pdfCtx.clip(to: mediaBox)
+                pdfCtx.translateBy(x: 0, y: -page.frame.minY)
 
-            for idx in plan.zOrder {
-                CGElementDrawer.drawDocxPlacement(in: pdfCtx, placement: plan.placements[idx], images: cache)
+                for header in page.headerPlacements {
+                    CGElementDrawer.drawDocxPlacement(in: pdfCtx, placement: header, images: cache)
+                }
+                for idx in page.bodyIndices {
+                    CGElementDrawer.drawDocxPlacement(in: pdfCtx, placement: plan.placements[idx], images: cache)
+                }
+                for footer in page.footerPlacements {
+                    CGElementDrawer.drawDocxPlacement(in: pdfCtx, placement: footer, images: cache)
+                }
+                pdfCtx.restoreGState()
+                pdfCtx.endPage()
             }
-            pdfCtx.restoreGState()
-            pdfCtx.endPage()
         case .xlsx:
             for sheet in doc.sheets {
                 let (_, _, totalW, totalH) = CGElementDrawer.computeSheetExtents(sheet)

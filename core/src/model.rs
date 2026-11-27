@@ -198,6 +198,9 @@ pub struct Document {
     pub schema_version: u32,
     pub kind: Kind,
     pub width: f32,
+    /// DOCX 页面高度（点），来自 sectPr/pgSz@h，缺省为 0（平台层按默认比例回退）
+    #[serde(skip_serializing_if = "is_zero_f32")]
+    pub page_height: f32,
     pub pages: Vec<Page>,
     pub blocks: Vec<Element>,
     pub warnings: Vec<String>,
@@ -247,6 +250,7 @@ impl Document {
             schema_version: schema_version(),
             kind,
             width: 595.0,
+            page_height: 0.0,
             pages: Vec::new(),
             blocks: Vec::new(),
             warnings: Vec::new(),
@@ -388,6 +392,9 @@ pub struct Element {
     /// 元素级超链接目标（外部白名单 URL 或 `#slide:` / `#block:` / `#sheet:` 内部跳转）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// DOCX 段前强制换页标记（来自 `w:pageBreakBefore` 或 `<w:br w:type="page"/>`），为 false 时不序列化
+    #[serde(skip_serializing_if = "is_false")]
+    pub page_break_before: bool,
 }
 
 impl Default for Element {
@@ -431,6 +438,7 @@ impl Default for Element {
             dist_left: 0.0,
             dist_right: 0.0,
             link: None,
+            page_break_before: false,
         }
     }
 }

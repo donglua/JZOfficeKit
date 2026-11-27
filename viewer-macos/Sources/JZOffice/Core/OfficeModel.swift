@@ -298,6 +298,7 @@ public struct OfficeElement: Codable, Sendable {
     public var distLeft: CGFloat
     public var distRight: CGFloat
     public var link: String?
+    public var pageBreakBefore: Bool
 
     enum CodingKeys: String, CodingKey {
         case type, x, y, width, height, transform, padding, fill, stroke, strokeWidth
@@ -305,7 +306,7 @@ public struct OfficeElement: Codable, Sendable {
         case cellValigns, cellBorders, strokeDash
         case rowHeights, cellPaddings
         case wrapMode, horizontalAlign, behindDoc, distTop, distBottom, distLeft, distRight
-        case link
+        case link, pageBreakBefore
     }
 
     public init(
@@ -342,7 +343,8 @@ public struct OfficeElement: Codable, Sendable {
         distBottom: CGFloat = 0,
         distLeft: CGFloat = 0,
         distRight: CGFloat = 0,
-        link: String? = nil
+        link: String? = nil,
+        pageBreakBefore: Bool = false
     ) {
         self.type = type
         self.x = x
@@ -378,6 +380,7 @@ public struct OfficeElement: Codable, Sendable {
         self.distLeft = distLeft
         self.distRight = distRight
         self.link = link
+        self.pageBreakBefore = pageBreakBefore
     }
 
     public init(from decoder: Decoder) throws {
@@ -422,6 +425,7 @@ public struct OfficeElement: Codable, Sendable {
         self.distLeft = Self.clampWrapDistance(try c.decodeIfPresent(CGFloat.self, forKey: .distLeft))
         self.distRight = Self.clampWrapDistance(try c.decodeIfPresent(CGFloat.self, forKey: .distRight))
         self.link = try c.decodeIfPresent(String.self, forKey: .link)
+        self.pageBreakBefore = try c.decodeIfPresent(Bool.self, forKey: .pageBreakBefore) ?? false
     }
 
     private static func clampWrapDistance(_ value: CGFloat?) -> CGFloat {
@@ -727,6 +731,7 @@ public struct OfficeDocument: Codable, Sendable {
     public let schemaVersion: Int
     public let kind: OfficeKind
     public let width: CGFloat
+    public let pageHeight: CGFloat
     public let pages: [OfficePage]
     public let blocks: [OfficeElement]
     public let warnings: [String]
@@ -743,7 +748,7 @@ public struct OfficeDocument: Codable, Sendable {
     public let outline: [OfficeOutlineItem]
 
     enum CodingKeys: String, CodingKey {
-        case schemaVersion, kind, width, pages, blocks, warnings, sheets, cellStyles
+        case schemaVersion, kind, width, pageHeight, pages, blocks, warnings, sheets, cellStyles
         case headerBlocks, footerBlocks, headerDistance, footerDistance
         case marginTop, marginBottom, marginLeft, marginRight
         case outline
@@ -762,6 +767,7 @@ public struct OfficeDocument: Codable, Sendable {
         self.schemaVersion = version
         self.kind = try c.decode(OfficeKind.self, forKey: .kind)
         self.width = try c.decodeIfPresent(CGFloat.self, forKey: .width) ?? 595
+        self.pageHeight = try c.decodeIfPresent(CGFloat.self, forKey: .pageHeight) ?? 0
         self.pages = try c.decodeIfPresent([OfficePage].self, forKey: .pages) ?? []
         self.blocks = try c.decodeIfPresent([OfficeElement].self, forKey: .blocks) ?? []
         self.warnings = try c.decodeIfPresent([String].self, forKey: .warnings) ?? []
@@ -775,6 +781,7 @@ public struct OfficeDocument: Codable, Sendable {
         self.marginBottom = try c.decodeIfPresent(CGFloat.self, forKey: .marginBottom) ?? 0
         self.marginLeft = try c.decodeIfPresent(CGFloat.self, forKey: .marginLeft) ?? 0
         self.marginRight = try c.decodeIfPresent(CGFloat.self, forKey: .marginRight) ?? 0
+        self.outline = try c.decodeIfPresent([OfficeOutlineItem].self, forKey: .outline) ?? []
     }
 }
 

@@ -631,12 +631,24 @@ public enum CGElementDrawer {
         public let obstacles: [DocxWrapObstacle]
     }
 
+    public struct DocxPageFrame: Sendable {
+        public let pageIndex: Int
+        public let frame: CGRect
+        public let headerPlacements: [DocxBlockPlacement]
+        public let bodyIndices: [Int]
+        public let footerPlacements: [DocxBlockPlacement]
+    }
+
     public struct DocxLayoutPlan: Sendable {
         public let placements: [DocxBlockPlacement]
         public let zOrder: [Int]
         public let yOffsets: [CGFloat]
         public let contentHeight: CGFloat
+        public let pageHeight: CGFloat
+        public let pages: [DocxPageFrame]
     }
+
+    public static let docxPageGap: CGFloat = 16
 
     // MARK: - CoreText 段落排版与绘制
 
@@ -1229,20 +1241,127 @@ public enum CGElementDrawer {
         obstacles.reduce(0) { max($0, $1.bottom) }
     }
 
+    private static func layoutDocxBand(
+        _ blocks: [OfficeElement],
+        baseElementIndex: Int,
+        docW: CGFloat,
+        marginL: CGFloat,
+        availW: CGFloat
+    ) -> (placements: [DocxBlockPlacement], height: CGFloat) {
+        var result: [DocxBlockPlacement] = []
+        var curY: CGFloat = 0
+        var maxBottom: CGFloat = 0
+        for (offset, block) in blocks.enumerated() {
+            let isFloating = block.wrapMode != .inline
+            let elW: CGFloat
+            if isFloating {
+                let rawW: CGFloat
+                if block.width > 0 {
+                    rawW = block.width
+                } else if !block.textWrap && !block.paragraphs.isEmpty {
+                    let padding = max(0, block.padding)
+                    rawW = measureParagraphsMaxLineWidth(block.paragraphs, maxWidth: docW) + padding * 2
+                } else if block.type == .text {
+                    rawW = min(availW, 240)
+                } else {
+                    rawW = 80
+                }
+                elW = min(docW, max(1, rawW))
+            } else if block.width > 0 {
+                elW = min(availW, block.width)
+            } else if !block.textWrap && !block.paragraphs.isEmpty {
+                let padding = max(0, block.padding)
+                elW = min(availW, max(1, measureParagraphsMaxLineWidth(block.paragraphs, maxWidth: availW) + padding * 2))
+            } else {
+                elW = availW
+            }
+            let blockMaxW = isFloating ? docW : availW
+            var elH = block.height
+            if elH > 0 {
+                if block.width > blockMaxW && block.width > 0 {
+                    elH = block.height * (elW / block.width)
+                }
+            } else if block.type == .line {
+                elH = 0
+            } else if block.type == .table && !block.rows.isEmpty {
+                var tbl = block
+                tbl.width = elW
+                elH = measureTableHeight(element: tbl)
+            } else if !block.paragraphs.isEmpty {
+                let padding = max(0, block.padding)
+                let availTextW = max(1, elW - padding * 2)
+                let wrap = resolveDocxTextWrap(for: block, isFloating: isFloating)
+                elH = measureParagraphsHeight(block.paragraphs, availableWidth: availTextW, wrap: wrap) + max(8, padding * 2)
+            } else {
+                elH = 24
+            }
+            let blockX: CGFloat
+            switch block.horizontalAlign {
+            case 1: blockX = marginL
+            case 2: blockX = max(0, marginL + (availW - elW) / 2.0)
+            case 3: blockX = max(0, marginL + availW - elW)
+            default: blockX = isFloating ? max(0, min(max(0, docW - elW), block.x)) : marginL
+            }
+            let yPos = isFloating ? max(0, curY + block.y) : curY
+            let frame = CGRect(x: blockX, y: yPos, width: elW, height: elH)
+            result.append(DocxBlockPlacement(
+                elementIndex: baseElementIndex + offset,
+                element: block,
+                frame: frame,
+                isFloating: isFloating,
+                behindDoc: block.behindDoc,
+                obstacles: []
+            ))
+            if !isFloating {
+                curY += elH + 4
+            }
+            maxBottom = max(maxBottom, frame.maxY)
+        }
+        return (result, maxBottom)
+    }
+
+    private static func shiftPlacements(_ items: [DocxBlockPlacement], dy: CGFloat) -> [DocxBlockPlacement] {
+        items.map { item in
+            DocxBlockPlacement(
+                elementIndex: item.elementIndex,
+                element: item.element,
+                frame: item.frame.offsetBy(dx: 0, dy: dy),
+                isFloating: item.isFloating,
+                behindDoc: item.behindDoc,
+                obstacles: item.obstacles
+            )
+        }
+    }
+
     public static func layoutDocxBlocks(
         in doc: OfficeDocument,
         maxHeight: CGFloat? = nil
     ) -> DocxLayoutPlan {
         guard doc.kind == .docx else {
-            return DocxLayoutPlan(placements: [], zOrder: [], yOffsets: [], contentHeight: 0)
+            return DocxLayoutPlan(placements: [], zOrder: [], yOffsets: [], contentHeight: 0, pageHeight: 792, pages: [])
         }
 
         let docW = doc.width > 0 ? doc.width : 595
+        let pageH: CGFloat = doc.pageHeight > 0 ? doc.pageHeight : round(docW * 1.414)
+        let pageStride = pageH + docxPageGap
         let marginL: CGFloat = doc.marginLeft > 0 ? doc.marginLeft : 24
         let marginR: CGFloat = doc.marginRight > 0 ? doc.marginRight : 24
         let marginTop: CGFloat = doc.marginTop > 0 ? doc.marginTop : 24
         let marginBottom: CGFloat = doc.marginBottom > 0 ? doc.marginBottom : 24
         let availW = max(100, docW - marginL - marginR)
+
+        let headerBand = layoutDocxBand(doc.headerBlocks, baseElementIndex: 0, docW: docW, marginL: marginL, availW: availW)
+        let footerBaseIdx = doc.headerBlocks.count + doc.blocks.count
+        let footerBand = layoutDocxBand(doc.footerBlocks, baseElementIndex: footerBaseIdx, docW: docW, marginL: marginL, availW: availW)
+
+        let headerTopRel: CGFloat = doc.headerDistance > 0 ? min(doc.headerDistance, max(16, marginTop * 0.65)) : 16
+        let footerDistRel: CGFloat = doc.footerDistance > 0 ? min(doc.footerDistance, max(16, marginBottom * 0.65)) : 16
+        var contentTopRel = doc.headerBlocks.isEmpty ? marginTop : max(marginTop, headerTopRel + headerBand.height + 8)
+        var contentBottomRel = pageH - (doc.footerBlocks.isEmpty ? marginBottom : max(marginBottom, footerDistRel + footerBand.height + 8))
+        if contentBottomRel - contentTopRel < 80 {
+            contentTopRel = min(marginTop, pageH * 0.15)
+            contentBottomRel = pageH - min(marginBottom, pageH * 0.15)
+        }
 
         let totalCount = doc.headerBlocks.count + doc.blocks.count + doc.footerBlocks.count
         var placements: [DocxBlockPlacement] = []
@@ -1250,219 +1369,295 @@ public enum CGElementDrawer {
         var behindIndices: [Int] = []
         var flowIndices: [Int] = []
         var frontIndices: [Int] = []
-        var curY: CGFloat = marginTop
-        var maxBottom: CGFloat = marginTop
-        var globalIndex = 0
 
-        let sections: [[OfficeElement]] = [doc.headerBlocks, doc.blocks, doc.footerBlocks]
-        for (sectionIdx, section) in sections.enumerated() {
-            let sectionMinY = sectionIdx == 0 ? min(marginTop, 24) : curY
-            var activeObstacles: [DocxWrapObstacle] = []
-
-            for block in section {
-                let isFloating = block.wrapMode != .inline
-                if let limitY = maxHeight, !isFloating && curY >= limitY - 16 {
-                    break
-                }
-
-                if !isFloating {
-                    pruneObstacles(&activeObstacles, aboveY: curY)
-                    if block.type == .table && !activeObstacles.isEmpty {
-                        curY = max(curY, maxObstacleBottom(activeObstacles) + 8)
-                        activeObstacles.removeAll()
-                    }
-                }
-
-                let elW: CGFloat
-                if isFloating {
-                    let rawW: CGFloat
-                    if block.width > 0 {
-                        rawW = block.width
-                    } else if !block.textWrap && !block.paragraphs.isEmpty {
-                        let padding = max(0, block.padding)
-                        rawW = measureParagraphsMaxLineWidth(block.paragraphs, maxWidth: docW) + padding * 2
-                    } else if block.type == .text {
-                        rawW = min(availW, 240)
-                    } else {
-                        rawW = 80
-                    }
-                    elW = min(docW, max(1, rawW))
-                } else if block.width > 0 {
-                    elW = min(availW, block.width)
-                } else if !block.textWrap && !block.paragraphs.isEmpty {
-                    let padding = max(0, block.padding)
-                    elW = min(availW, max(1, measureParagraphsMaxLineWidth(block.paragraphs, maxWidth: availW) + padding * 2))
-                } else {
-                    elW = availW
-                }
-
-                let blockMaxWidth = isFloating ? docW : availW
-                var elH = block.height
-                if elH > 0 {
-                    if block.width > blockMaxWidth && block.width > 0 {
-                        elH = block.height * (elW / block.width)
-                    }
-                } else if block.type == .line {
-                    elH = 0
-                } else if block.type == .table && !block.rows.isEmpty {
-                    var tbl = block
-                    tbl.width = elW
-                    elH = measureTableHeight(element: tbl)
-                }
-
-                if isFloating {
-                    if elH <= 0 && block.type != .line {
-                        if !block.paragraphs.isEmpty {
-                            let padding = max(0, block.padding)
-                            let availTextW = max(1, elW - padding * 2)
-                            elH = measureParagraphsHeight(block.paragraphs, availableWidth: availTextW, wrap: block.textWrap) + max(8, padding * 2)
-                        } else {
-                            elH = 80
-                        }
-                    }
-
-                    let floatX: CGFloat
-                    switch block.horizontalAlign {
-                    case 1:
-                        floatX = marginL
-                    case 2:
-                        floatX = max(0, marginL + (availW - elW) / 2.0)
-                    case 3:
-                        floatX = max(0, marginL + availW - elW)
-                    default:
-                        floatX = max(0, min(max(0, docW - elW), block.x))
-                    }
-
-                    let floatY = max(sectionMinY, curY + block.y)
-                    let placedY: CGFloat
-                    if block.wrapMode == .topAndBottom {
-                        let clearY = max(curY, maxObstacleBottom(activeObstacles))
-                        placedY = max(floatY, clearY + max(0, block.distTop))
-                        curY = max(curY, placedY + elH + max(0, block.distBottom) + 8)
-                        pruneObstacles(&activeObstacles, aboveY: curY)
-                    } else {
-                        placedY = floatY
-                        if block.wrapMode != .none {
-                            let obsTop = placedY - max(0, block.distTop)
-                            let obsBottom = placedY + elH + max(0, block.distBottom)
-                            let obsLeft = floatX - max(0, block.distLeft)
-                            let obsRight = floatX + elW + max(0, block.distRight)
-                            let side: DocxWrapSide
-                            if block.horizontalAlign == 1 {
-                                side = .left
-                            } else if block.horizontalAlign == 3 {
-                                side = .right
-                            } else {
-                                side = (floatX + elW * 0.5 <= marginL + availW * 0.5) ? .left : .right
-                            }
-                            if obsLeft <= marginL + 40 && obsRight >= marginL + availW - 40 {
-                                curY = max(curY, obsBottom + 8)
-                                pruneObstacles(&activeObstacles, aboveY: curY)
-                            } else {
-                                activeObstacles.append(DocxWrapObstacle(
-                                    left: obsLeft,
-                                    right: obsRight,
-                                    top: obsTop,
-                                    bottom: obsBottom,
-                                    side: side
-                                ))
-                            }
-                        }
-                    }
-
-                    let frame = CGRect(x: floatX, y: placedY, width: elW, height: elH)
-                    let placementIdx = placements.count
-                    placements.append(DocxBlockPlacement(
-                        elementIndex: globalIndex,
-                        element: block,
-                        frame: frame,
-                        isFloating: true,
-                        behindDoc: block.behindDoc,
-                        obstacles: []
-                    ))
-                    if block.behindDoc {
-                        behindIndices.append(placementIdx)
-                    } else {
-                        frontIndices.append(placementIdx)
-                    }
-                    maxBottom = max(maxBottom, frame.maxY)
-                } else {
-                    let blockX: CGFloat
-                    switch block.horizontalAlign {
-                    case 2:
-                        blockX = marginL + max(0, (availW - elW) / 2.0)
-                    case 3:
-                        blockX = marginL + max(0, availW - elW)
-                    default:
-                        blockX = marginL
-                    }
-                    if !activeObstacles.isEmpty && block.type != .text {
-                        var clearBottom = curY
-                        for obs in activeObstacles {
-                            if blockX < obs.right && blockX + elW > obs.left {
-                                clearBottom = max(clearBottom, obs.bottom + 8)
-                            }
-                        }
-                        if clearBottom > curY {
-                            curY = clearBottom
-                            pruneObstacles(&activeObstacles, aboveY: curY)
-                        }
-                    }
-
-                    var localObstacles: [DocxWrapObstacle] = []
-                    if elH <= 0 && block.type != .line {
-                        if !block.paragraphs.isEmpty {
-                            let padding = max(0, block.padding)
-                            let availTextW = max(1, elW - padding * 2)
-                            let wrap = resolveDocxTextWrap(for: block, isFloating: false)
-                            if block.type == .text && !activeObstacles.isEmpty {
-                                localObstacles = localizeObstacles(
-                                    activeObstacles,
-                                    originX: blockX + padding,
-                                    originY: curY + padding
-                                )
-                            }
-                            elH = measureParagraphsHeight(
-                                block.paragraphs,
-                                availableWidth: availTextW,
-                                wrap: wrap,
-                                obstacles: localObstacles
-                            ) + max(8, padding * 2)
-                        } else {
-                            elH = 80
-                        }
-                    }
-
-                    let frame = CGRect(x: blockX, y: curY, width: elW, height: elH)
-                    let placementIdx = placements.count
-                    placements.append(DocxBlockPlacement(
-                        elementIndex: globalIndex,
-                        element: block,
-                        frame: frame,
-                        isFloating: false,
-                        behindDoc: false,
-                        obstacles: localObstacles
-                    ))
-                    flowIndices.append(placementIdx)
-                    curY += elH + 8
-                    maxBottom = max(maxBottom, curY)
-                }
-
-                globalIndex += 1
-            }
-
-            if !activeObstacles.isEmpty {
-                curY = max(curY, maxObstacleBottom(activeObstacles) + 8)
-                activeObstacles.removeAll()
-                maxBottom = max(maxBottom, curY)
-            }
+        // 首页页眉写入 placements[0..<headerBlocks.count]，与全文检索索引严格对齐
+        let firstHeaderPlacements = shiftPlacements(headerBand.placements, dy: headerTopRel)
+        for p in firstHeaderPlacements {
+            let idx = placements.count
+            placements.append(p)
+            if p.isFloating && p.behindDoc { behindIndices.append(idx) }
+            else if p.isFloating { frontIndices.append(idx) }
+            else { flowIndices.append(idx) }
         }
 
+        var pageIdx = 0
+        var pageOriginY: CGFloat = 0
+        var curY: CGFloat = contentTopRel
+        var pageHasBody = false
+        var activeObstacles: [DocxWrapObstacle] = []
+        var pageBehind: [[Int]] = [[]]
+        var pageFlow: [[Int]] = [[]]
+        var pageFront: [[Int]] = [[]]
+        var maxBottom: CGFloat = pageH
+
+        func advancePage() {
+            if !activeObstacles.isEmpty {
+                activeObstacles.removeAll()
+            }
+            pageIdx += 1
+            pageOriginY = CGFloat(pageIdx) * pageStride
+            curY = pageOriginY + contentTopRel
+            pageHasBody = false
+            pageBehind.append([])
+            pageFlow.append([])
+            pageFront.append([])
+        }
+
+        var globalIndex = doc.headerBlocks.count
+        for block in doc.blocks {
+            let isFloating = block.wrapMode != .inline
+            if let limitY = maxHeight, !isFloating && curY >= limitY - 16 {
+                break
+            }
+
+            if !isFloating && block.pageBreakBefore && pageHasBody {
+                advancePage()
+                if let limitY = maxHeight, curY >= limitY - 16 {
+                    break
+                }
+            }
+
+            if !isFloating {
+                pruneObstacles(&activeObstacles, aboveY: curY)
+                if block.type == .table && !activeObstacles.isEmpty {
+                    curY = max(curY, maxObstacleBottom(activeObstacles) + 8)
+                    activeObstacles.removeAll()
+                }
+            }
+
+            let elW: CGFloat
+            if isFloating {
+                let rawW: CGFloat
+                if block.width > 0 {
+                    rawW = block.width
+                } else if !block.textWrap && !block.paragraphs.isEmpty {
+                    let padding = max(0, block.padding)
+                    rawW = measureParagraphsMaxLineWidth(block.paragraphs, maxWidth: docW) + padding * 2
+                } else if block.type == .text {
+                    rawW = min(availW, 240)
+                } else {
+                    rawW = 80
+                }
+                elW = min(docW, max(1, rawW))
+            } else if block.width > 0 {
+                elW = min(availW, block.width)
+            } else if !block.textWrap && !block.paragraphs.isEmpty {
+                let padding = max(0, block.padding)
+                elW = min(availW, max(1, measureParagraphsMaxLineWidth(block.paragraphs, maxWidth: availW) + padding * 2))
+            } else {
+                elW = availW
+            }
+
+            let blockMaxWidth = isFloating ? docW : availW
+            var elH = block.height
+            if elH > 0 {
+                if block.width > blockMaxWidth && block.width > 0 {
+                    elH = block.height * (elW / block.width)
+                }
+            } else if block.type == .line {
+                elH = 0
+            } else if block.type == .table && !block.rows.isEmpty {
+                var tbl = block
+                tbl.width = elW
+                elH = measureTableHeight(element: tbl)
+            }
+
+            if isFloating {
+                if elH <= 0 && block.type != .line {
+                    if !block.paragraphs.isEmpty {
+                        let padding = max(0, block.padding)
+                        let availTextW = max(1, elW - padding * 2)
+                        elH = measureParagraphsHeight(block.paragraphs, availableWidth: availTextW, wrap: block.textWrap) + max(8, padding * 2)
+                    } else {
+                        elH = 80
+                    }
+                }
+
+                let floatX: CGFloat
+                switch block.horizontalAlign {
+                case 1:
+                    floatX = marginL
+                case 2:
+                    floatX = max(0, marginL + (availW - elW) / 2.0)
+                case 3:
+                    floatX = max(0, marginL + availW - elW)
+                default:
+                    floatX = max(0, min(max(0, docW - elW), block.x))
+                }
+
+                let floatY = max(pageOriginY + contentTopRel, curY + block.y)
+                let placedY: CGFloat
+                if block.wrapMode == .topAndBottom {
+                    let clearY = max(curY, maxObstacleBottom(activeObstacles))
+                    placedY = max(floatY, clearY + max(0, block.distTop))
+                    curY = max(curY, placedY + elH + max(0, block.distBottom) + 8)
+                    pruneObstacles(&activeObstacles, aboveY: curY)
+                } else {
+                    placedY = floatY
+                    if block.wrapMode != .none {
+                        let obsTop = placedY - max(0, block.distTop)
+                        let obsBottom = placedY + elH + max(0, block.distBottom)
+                        let obsLeft = floatX - max(0, block.distLeft)
+                        let obsRight = floatX + elW + max(0, block.distRight)
+                        let side: DocxWrapSide
+                        if block.horizontalAlign == 1 {
+                            side = .left
+                        } else if block.horizontalAlign == 3 {
+                            side = .right
+                        } else {
+                            side = (floatX + elW * 0.5 <= marginL + availW * 0.5) ? .left : .right
+                        }
+                        if obsLeft <= marginL + 40 && obsRight >= marginL + availW - 40 {
+                            curY = max(curY, obsBottom + 8)
+                            pruneObstacles(&activeObstacles, aboveY: curY)
+                        } else {
+                            activeObstacles.append(DocxWrapObstacle(
+                                left: obsLeft,
+                                right: obsRight,
+                                top: obsTop,
+                                bottom: obsBottom,
+                                side: side
+                            ))
+                        }
+                    }
+                }
+
+                let frame = CGRect(x: floatX, y: placedY, width: elW, height: elH)
+                let placementIdx = placements.count
+                placements.append(DocxBlockPlacement(
+                    elementIndex: globalIndex,
+                    element: block,
+                    frame: frame,
+                    isFloating: true,
+                    behindDoc: block.behindDoc,
+                    obstacles: []
+                ))
+                if block.behindDoc {
+                    behindIndices.append(placementIdx)
+                    pageBehind[pageIdx].append(placementIdx)
+                } else {
+                    frontIndices.append(placementIdx)
+                    pageFront[pageIdx].append(placementIdx)
+                }
+                pageHasBody = true
+                maxBottom = max(maxBottom, frame.maxY)
+            } else {
+                let blockX: CGFloat
+                switch block.horizontalAlign {
+                case 2:
+                    blockX = marginL + max(0, (availW - elW) / 2.0)
+                case 3:
+                    blockX = marginL + max(0, availW - elW)
+                default:
+                    blockX = marginL
+                }
+                if !activeObstacles.isEmpty && block.type != .text {
+                    var clearBottom = curY
+                    for obs in activeObstacles {
+                        if blockX < obs.right && blockX + elW > obs.left {
+                            clearBottom = max(clearBottom, obs.bottom + 8)
+                        }
+                    }
+                    if clearBottom > curY {
+                        curY = clearBottom
+                        pruneObstacles(&activeObstacles, aboveY: curY)
+                    }
+                }
+
+                func measureInlineBlock(at y: CGFloat, obstacles: [DocxWrapObstacle]) -> (CGFloat, [DocxWrapObstacle]) {
+                    if elH > 0 || block.type == .line {
+                        return (elH, [])
+                    }
+                    guard !block.paragraphs.isEmpty else { return (80, []) }
+                    let padding = max(0, block.padding)
+                    let availTextW = max(1, elW - padding * 2)
+                    let wrap = resolveDocxTextWrap(for: block, isFloating: false)
+                    var localObs: [DocxWrapObstacle] = []
+                    if block.type == .text && !obstacles.isEmpty {
+                        localObs = localizeObstacles(
+                            obstacles,
+                            originX: blockX + padding,
+                            originY: y + padding
+                        )
+                    }
+                    let measuredH = measureParagraphsHeight(
+                        block.paragraphs,
+                        availableWidth: availTextW,
+                        wrap: wrap,
+                        obstacles: localObs
+                    ) + max(8, padding * 2)
+                    return (measuredH, localObs)
+                }
+
+                var (finalH, localObstacles) = measureInlineBlock(at: curY, obstacles: activeObstacles)
+                if pageHasBody && (curY - pageOriginY) + finalH > contentBottomRel {
+                    advancePage()
+                    if let limitY = maxHeight, curY >= limitY - 16 {
+                        break
+                    }
+                    (finalH, localObstacles) = measureInlineBlock(at: curY, obstacles: activeObstacles)
+                }
+
+                let frame = CGRect(x: blockX, y: curY, width: elW, height: finalH)
+                let placementIdx = placements.count
+                placements.append(DocxBlockPlacement(
+                    elementIndex: globalIndex,
+                    element: block,
+                    frame: frame,
+                    isFloating: false,
+                    behindDoc: false,
+                    obstacles: localObstacles
+                ))
+                flowIndices.append(placementIdx)
+                pageFlow[pageIdx].append(placementIdx)
+                pageHasBody = true
+                curY += finalH + 8
+                maxBottom = max(maxBottom, curY)
+            }
+
+            globalIndex += 1
+        }
+
+        let totalPages = max(1, pageIdx + 1)
+        let lastPageOriginY = CGFloat(totalPages - 1) * pageStride
+        let footerOffsetInPage = max(contentBottomRel + 4, pageH - footerDistRel - footerBand.height)
+        let lastFooterPlacements = shiftPlacements(footerBand.placements, dy: lastPageOriginY + footerOffsetInPage)
+        for p in lastFooterPlacements {
+            let idx = placements.count
+            placements.append(p)
+            if p.isFloating && p.behindDoc { behindIndices.append(idx) }
+            else if p.isFloating { frontIndices.append(idx) }
+            else { flowIndices.append(idx) }
+        }
+
+        var pages: [DocxPageFrame] = []
+        pages.reserveCapacity(totalPages)
+        for p in 0..<totalPages {
+            let originY = CGFloat(p) * pageStride
+            let pageFrame = CGRect(x: 0, y: originY, width: docW, height: pageH)
+            let headers = shiftPlacements(headerBand.placements, dy: originY + headerTopRel)
+            let footers = shiftPlacements(footerBand.placements, dy: originY + footerOffsetInPage)
+            let bodyOrdered = pageBehind[p] + pageFlow[p] + pageFront[p]
+            pages.append(DocxPageFrame(
+                pageIndex: p,
+                frame: pageFrame,
+                headerPlacements: headers,
+                bodyIndices: bodyOrdered,
+                footerPlacements: footers
+            ))
+        }
+
+        let totalHeight = max(
+            CGFloat(totalPages) * pageH + CGFloat(max(0, totalPages - 1)) * docxPageGap,
+            maxBottom + marginBottom
+        )
         return DocxLayoutPlan(
             placements: placements,
             zOrder: behindIndices + flowIndices + frontIndices,
             yOffsets: placements.map { $0.frame.minY },
-            contentHeight: maxBottom + marginBottom
+            contentHeight: totalHeight,
+            pageHeight: pageH,
+            pages: pages
         )
     }
 

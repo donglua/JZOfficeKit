@@ -280,6 +280,7 @@ pub(super) struct ParagraphFormat {
     pub number: String,
     pub level: u8,
     pub outline_level: Option<u8>,
+    pub page_break_before: bool,
     pub has_indent: bool,
     pub contextual_spacing: bool,
     pub snap_to_grid: bool,
@@ -294,6 +295,7 @@ impl Default for ParagraphFormat {
             number: String::new(),
             level: 0,
             outline_level: None,
+            page_break_before: false,
             has_indent: false,
             contextual_spacing: false,
             snap_to_grid: true,
@@ -461,6 +463,9 @@ impl ParagraphFormat {
                     if let Some(level) = node.child("ilvl") {
                         self.level = level.attr("val").parse::<u8>().map_or(0, |n| n.min(8));
                     }
+                }
+                "pageBreakBefore" => {
+                    self.page_break_before = enabled(node.attr("val"));
                 }
                 "shd" => {
                     let fill = node.attr("fill");

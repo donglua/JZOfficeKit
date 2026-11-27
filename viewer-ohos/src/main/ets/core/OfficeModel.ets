@@ -46,7 +46,6 @@ export interface Run {
   weight?: number;
   color: number;
   background?: number;
-  /** 文本段超链接目标 */
   link?: string;
 }
 
@@ -100,8 +99,6 @@ export interface Element {
   distBottom?: number;
   distLeft?: number;
   distRight?: number;
-  /** 元素级超链接目标 */
-  link?: string;
   paragraphs?: Paragraph[];
   rows?: Paragraph[][][];
   columnWidths?: number[];
@@ -119,6 +116,10 @@ export interface Element {
   rowHeights?: number[];
   /** 单元格四边内边距矩阵，每项为 [top, right, bottom, left]；缺省为空表示全表默认 [5, 5, 5, 5] */
   cellPaddings?: number[][][];
+  /** 元素级超链接目标 */
+  link?: string;
+  /** DOCX 段前强制换页标记 */
+  pageBreakBefore?: boolean;
 }
 
 export interface Page {
@@ -218,6 +219,8 @@ export interface OfficeDocument {
   schemaVersion: number;
   kind: Kind;
   width: number;
+  /** DOCX 页面高度（点），缺省按默认纸张比例回退 */
+  pageHeight?: number;
   pages: Page[];
   blocks: Element[];
   warnings: string[];

@@ -118,6 +118,9 @@ public final class OfficePreviewController: ObservableObject {
             currentPage = pageNumber
             notifyPageListeners()
         }
+        if document?.kind == .docx {
+            canvasView?.scrollToDocxPage(pageNumber)
+        }
         scrollRequest = ScrollRequest(page: pageNumber)
         clearScrollTargetTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 350_000_000)
@@ -565,16 +568,22 @@ public struct OfficePreviewView: View {
 
             let meta = OfficeMetadata.fromDocument(parsed)
             controller.metadata = meta
-            let initialPage = meta.pageCount > 0 ? 1 : 0
-            controller.updateDocumentState(page: initialPage, count: meta.pageCount, sheets: meta.sheetNames)
+            let effectivePageCount: Int
+            if parsed.kind == .docx {
+                effectivePageCount = max(1, controller.docxLayoutPlan?.pages.count ?? 1)
+            } else {
+                effectivePageCount = meta.pageCount
+            }
+            let initialPage = effectivePageCount > 0 ? 1 : 0
+            controller.updateDocumentState(page: initialPage, count: effectivePageCount, sheets: meta.sheetNames)
             let info = OfficePreviewInfo(
                 format: meta.format,
-                pageCount: meta.pageCount,
+                pageCount: effectivePageCount,
                 warnings: meta.warnings,
                 sheetNames: meta.sheetNames
             )
             onLoaded?(info)
-            onPageChange?(initialPage, meta.pageCount)
+            onPageChange?(initialPage, effectivePageCount)
         } catch {
             controller.isLoading = false
             controller.errorMessage = error.localizedDescription
@@ -920,8 +929,27 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             loader.request(visibleParts: visibleImages, prefetchParts: prefetchImages)
         }
 
-        // 动态计算当前页码 (PPTX)
-        if let doc = document, doc.kind == .pptx, !doc.pages.isEmpty {
+        // 动态计算当前页码 (PPTX / DOCX)
+        if let doc = document, doc.kind == .docx, let plan = docxLayoutPlan, !plan.pages.isEmpty {
+            let midY = docVisible.midY
+            var detectedPage = 1
+            if docVisible.minY <= 2 {
+                detectedPage = 1
+            } else if docVisible.maxY >= plan.contentHeight - 4 {
+                detectedPage = plan.pages.count
+            } else {
+                for page in plan.pages {
+                    if midY >= page.frame.minY && midY < page.frame.maxY + CGElementDrawer.docxPageGap {
+                        detectedPage = page.pageIndex + 1
+                        break
+                    }
+                }
+            }
+            if detectedPage != currentPage {
+                currentPage = detectedPage
+                onPageDetected?(detectedPage)
+            }
+        } else if let doc = document, doc.kind == .pptx, !doc.pages.isEmpty {
             let midY = docVisible.midY
             var detectedPage: Int = 1
             let totalDocHeight = doc.pages.reduce(CGFloat(0)) { $0 + ($1.height > 0 ? $1.height : 405) + 16 }
@@ -980,26 +1008,6 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
         }
     }
 
-    func scrollToBlock(_ blockIndex: Int) {
-        guard let doc = document, doc.kind == .docx else { return }
-        let plan = docxLayoutPlan ?? CGElementDrawer.layoutDocxBlocks(in: doc)
-        let targetElementIndex = doc.headerBlocks.count + blockIndex
-        guard targetElementIndex >= 0 && targetElementIndex < plan.placements.count else { return }
-        let frame = plan.placements[targetElementIndex].frame
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self, let clipView = self.enclosingScrollView?.contentView else { return }
-            let clipBounds = clipView.bounds
-            let insets = self.enclosingScrollView?.contentInsets ?? NSEdgeInsets()
-            let insetTop = max(0, insets.top)
-            let insetBottom = max(0, insets.bottom)
-            let minY = -insetTop
-            let maxY = max(minY, self.bounds.height - clipBounds.height + insetBottom)
-            let targetY = min(max(minY, (frame.minY - 24) * self.zoom - insetTop), maxY)
-            clipView.animator().scroll(to: NSPoint(x: clipBounds.minX, y: targetY))
-            self.enclosingScrollView?.reflectScrolledClipView(clipView)
-        }
-    }
-
     func scrollToHighlight(_ docRect: CGRect) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self, let clipView = self.enclosingScrollView?.contentView else { return }
@@ -1054,6 +1062,46 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
             let targetX = min(max(minX, viewRect.midX - visibleSize.width / 2 - insetLeft), maxX)
             let targetY = min(max(minY, viewRect.midY - visibleSize.height / 2 - insetTop), maxY)
             clipView.animator().scroll(to: NSPoint(x: targetX, y: targetY))
+            self.enclosingScrollView?.reflectScrolledClipView(clipView)
+        }
+    }
+
+    func scrollToBlock(_ blockIndex: Int) {
+        guard let doc = document, doc.kind == .docx else { return }
+        let plan = docxLayoutPlan ?? CGElementDrawer.layoutDocxBlocks(in: doc)
+        let targetElementIndex = doc.headerBlocks.count + blockIndex
+        guard targetElementIndex >= 0 && targetElementIndex < plan.placements.count else { return }
+        let frame = plan.placements[targetElementIndex].frame
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let clipView = self.enclosingScrollView?.contentView else { return }
+            let clipBounds = clipView.bounds
+            let insets = self.enclosingScrollView?.contentInsets ?? NSEdgeInsets()
+            let insetTop = max(0, insets.top)
+            let insetBottom = max(0, insets.bottom)
+            let minY = -insetTop
+            let maxY = max(minY, self.bounds.height - clipBounds.height + insetBottom)
+            let targetY = min(max(minY, (frame.minY - 24) * self.zoom - insetTop), maxY)
+            clipView.animator().scroll(to: NSPoint(x: clipBounds.minX, y: targetY))
+            self.enclosingScrollView?.reflectScrolledClipView(clipView)
+        }
+    }
+
+    func scrollToDocxPage(_ pageNumber: Int) {
+        guard let doc = document, doc.kind == .docx else { return }
+        let plan = docxLayoutPlan ?? CGElementDrawer.layoutDocxBlocks(in: doc)
+        let idx = pageNumber - 1
+        guard idx >= 0 && idx < plan.pages.count else { return }
+        let pageOriginY = plan.pages[idx].frame.minY
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let clipView = self.enclosingScrollView?.contentView else { return }
+            let clipBounds = clipView.bounds
+            let insets = self.enclosingScrollView?.contentInsets ?? NSEdgeInsets()
+            let insetTop = max(0, insets.top)
+            let insetBottom = max(0, insets.bottom)
+            let minY = -insetTop
+            let maxY = max(minY, self.bounds.height - clipBounds.height + insetBottom)
+            let targetY = min(max(minY, pageOriginY * self.zoom - insetTop), maxY)
+            clipView.animator().scroll(to: NSPoint(x: clipBounds.minX, y: targetY))
             self.enclosingScrollView?.reflectScrolledClipView(clipView)
         }
     }
@@ -1128,17 +1176,47 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
                 curY += pH + 16
             }
         case .docx:
-            let docW = doc.width > 0 ? doc.width : 595
-            let docH = bounds.height / safeZoom
-            ctx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
-            ctx.fill(CGRect(x: 0, y: 0, width: docW, height: docH))
             let plan = docxLayoutPlan ?? CGElementDrawer.layoutDocxBlocks(in: doc)
-            for idx in plan.zOrder {
-                let placement = plan.placements[idx]
-                if !expandedDocxHitRect(placement).intersects(docVisible) {
-                    continue
+            if !plan.pages.isEmpty {
+                for page in plan.pages {
+                    if !page.frame.intersects(docVisible) {
+                        continue
+                    }
+                    ctx.saveGState()
+                    ctx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+                    ctx.fill(page.frame)
+                    ctx.setStrokeColor(CGColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.08))
+                    ctx.setLineWidth(1.0 / safeZoom)
+                    ctx.stroke(page.frame)
+                    ctx.clip(to: page.frame)
+
+                    for header in page.headerPlacements {
+                        CGElementDrawer.drawDocxPlacement(in: ctx, placement: header, images: activeImages)
+                    }
+                    for idx in page.bodyIndices {
+                        let placement = plan.placements[idx]
+                        if !expandedDocxHitRect(placement).intersects(docVisible) {
+                            continue
+                        }
+                        CGElementDrawer.drawDocxPlacement(in: ctx, placement: placement, images: activeImages)
+                    }
+                    for footer in page.footerPlacements {
+                        CGElementDrawer.drawDocxPlacement(in: ctx, placement: footer, images: activeImages)
+                    }
+                    ctx.restoreGState()
                 }
-                CGElementDrawer.drawDocxPlacement(in: ctx, placement: placement, images: activeImages)
+            } else {
+                let docW = doc.width > 0 ? doc.width : 595
+                let docH = bounds.height / safeZoom
+                ctx.setFillColor(CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1))
+                ctx.fill(CGRect(x: 0, y: 0, width: docW, height: docH))
+                for idx in plan.zOrder {
+                    let placement = plan.placements[idx]
+                    if !expandedDocxHitRect(placement).intersects(docVisible) {
+                        continue
+                    }
+                    CGElementDrawer.drawDocxPlacement(in: ctx, placement: placement, images: activeImages)
+                }
             }
         case .xlsx:
             let idx = max(0, min(doc.sheets.count - 1, currentPage - 1))
@@ -1545,6 +1623,94 @@ final class OfficeDocumentNSView: NSView, NSMenuItemValidation {
                 selection = TextSelection(position: pos)
             }
             needsDisplay = true
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = hoverTrackingArea {
+            removeTrackingArea(existing)
+        }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        let target = linkTarget(atViewPoint: viewPoint)
+        if controllerRef?.hoveredLink != target {
+            controllerRef?.hoveredLink = target
+        }
+        if target != nil {
+            NSCursor.pointingHand.set()
+        } else {
+            super.mouseMoved(with: event)
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        if controllerRef?.hoveredLink != nil {
+            controllerRef?.hoveredLink = nil
+        }
+        super.mouseExited(with: event)
+    }
+
+    private func linkTarget(atViewPoint viewPoint: CGPoint) -> String? {
+        guard let doc = document else { return nil }
+        let safeZoom = max(0.01, zoom)
+        let docPoint = CGPoint(x: viewPoint.x / safeZoom, y: viewPoint.y / safeZoom)
+        switch doc.kind {
+        case .xlsx:
+            guard let sheet = currentSheet(),
+                  sheet.cells.contains(where: { $0.link != nil }),
+                  let coord = sheetCell(atViewPoint: viewPoint, clampToBounds: false) else {
+                return nil
+            }
+            return sheet.cells.first(where: { $0.row == coord.row && $0.column == coord.column })?.link
+        case .docx:
+            if let textLink = ensureTextLayout()?.link(at: docPoint) {
+                return textLink
+            }
+            if let plan = docxLayoutPlan {
+                for idx in plan.zOrder.reversed() {
+                    let placement = plan.placements[idx]
+                    if let link = placement.element.link, placement.frame.contains(docPoint) {
+                        return link
+                    }
+                }
+            }
+            return nil
+        case .pptx:
+            if let textLink = ensureTextLayout()?.link(at: docPoint) {
+                return textLink
+            }
+            var curY: CGFloat = 0
+            for page in doc.pages {
+                let pH = page.height > 0 ? page.height : 405
+                for el in page.elements.reversed() {
+                    guard let link = el.link else { continue }
+                    let affine: CGAffineTransform
+                    if el.transform.count >= 6 {
+                        let m = el.transform
+                        affine = CGAffineTransform(a: m[0], b: m[1], c: m[2], d: m[3], tx: m[4], ty: m[5] + curY)
+                    } else {
+                        affine = CGAffineTransform(translationX: el.x, y: el.y + curY)
+                    }
+                    let localPt = docPoint.applying(affine.inverted())
+                    let localRect = CGRect(x: 0, y: 0, width: max(0, el.width), height: max(0, el.height))
+                    if localRect.contains(localPt) {
+                        return link
+                    }
+                }
+                curY += pH + 16
+            }
+            return nil
         }
     }
 
